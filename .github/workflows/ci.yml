@@ -1,1 +1,29 @@
-# Placeholder — implemented in FOUND-04 (CI pipeline: lint, type-check, unit tests)
+name: CI
+
+"on":
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  lint-type-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install project (with dev dependencies)
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type-check (mypy)
+        run: mypy src/
+
+      - name: Unit tests (pytest)
+        run: pytest tests/unit -v

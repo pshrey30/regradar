@@ -65,6 +65,11 @@ python_version = "3.11"
 packages = ["regradar"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "numpy.*"
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
