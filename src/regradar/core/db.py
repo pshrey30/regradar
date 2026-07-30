@@ -1,15 +1,11 @@
-"""SQLAlchemy declarative base and async engine/session factory.
+"""SQLAlchemy declarative base and async engine/session factory."""
 
-Reads DATABASE_URL / DATABASE_POOL_SIZE directly from the environment for now.
-Once FOUND-05 (core/config.py Settings) lands, this should source both from
-the shared Settings object instead of os.environ directly.
-"""
-
-import os
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+
+from regradar.core.config import get_settings
 
 
 class Base(DeclarativeBase):
@@ -23,9 +19,11 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 def get_engine():
     global _engine
     if _engine is None:
-        database_url = os.environ["DATABASE_URL"]
-        pool_size = int(os.environ.get("DATABASE_POOL_SIZE", "10"))
-        _engine = create_async_engine(database_url, pool_size=pool_size)
+        settings = get_settings()
+        _engine = create_async_engine(
+            settings.database_url.get_secret_value(),
+            pool_size=settings.database_pool_size,
+        )
     return _engine
 
 
