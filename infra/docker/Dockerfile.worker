@@ -1,1 +1,10 @@
-# Placeholder — implemented in FOUND-03 (Local Dev Environment / Docker Compose)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+COPY src ./src
+
+RUN pip install --no-cache-dir -e ".[worker]"
+
+CMD ["celery", "-A", "regradar.workers.celery_app", "worker", "--loglevel=INFO"]

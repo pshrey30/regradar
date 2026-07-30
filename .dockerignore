@@ -1,0 +1,13 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.claude/
+.agents/
+Document files/
+docs/
+tests/
