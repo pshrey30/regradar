@@ -20,6 +20,9 @@ htmlcov/
 
 .DS_Store
 
+# Project planning/spec PDFs — kept local, not published to the repo
+Document files/
+
 # Claude Code local tooling config — not part of the product
 .claude/
 .agents/
