@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     tier_low_model: str = Field(default="granite-13b", alias="TIER_LOW_MODEL")
     tier_routing_risk_threshold: str = Field(default="high", alias="TIER_ROUTING_RISK_THRESHOLD")
 
+    # ── Local inference — portfolio/demo cost control (ADR-05) ──────
+    # When enabled, agents route through locally-hosted models instead of
+    # paid APIs, so demo runs cost $0. Off by default; the real routing
+    # logic that reads these flags is built alongside AGENT-02/07/08/09.
+    use_local_llm: bool = Field(default=False, alias="USE_LOCAL_LLM")
+    local_llm_base_url: str = Field(
+        default="http://localhost:11434/v1", alias="LOCAL_LLM_BASE_URL"
+    )
+    local_llm_model: str = Field(default="llama3.1", alias="LOCAL_LLM_MODEL")
+    use_local_hf_inference: bool = Field(default=False, alias="USE_LOCAL_HF_INFERENCE")
+
     # ── Ingestion sources ────────────────────────────────────
     sec_edgar_user_agent: str = Field(alias="SEC_EDGAR_USER_AGENT")
     sec_edgar_rate_limit_per_sec: int = Field(default=10, alias="SEC_EDGAR_RATE_LIMIT_PER_SEC")
