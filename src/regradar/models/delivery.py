@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from regradar.core.db import Base
-from regradar.models.enums import DeliveryChannel, DeliveryStatus
+from regradar.models.enums import DeliveryChannel, DeliveryStatus, pg_enum_values
 
 if TYPE_CHECKING:
     from regradar.models.filing import Filing
@@ -26,14 +26,15 @@ class Delivery(Base):
         UUID(as_uuid=True), ForeignKey("filings.id", ondelete="CASCADE"), nullable=False
     )
     channel: Mapped[DeliveryChannel] = mapped_column(
-        SAEnum(DeliveryChannel, name="delivery_channel"), nullable=False
+        SAEnum(DeliveryChannel, name="delivery_channel", values_callable=pg_enum_values),
+        nullable=False,
     )
     webhook_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("webhooks.id", ondelete="SET NULL"), nullable=True
     )
     recipient: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[DeliveryStatus] = mapped_column(
-        SAEnum(DeliveryStatus, name="delivery_status"),
+        SAEnum(DeliveryStatus, name="delivery_status", values_callable=pg_enum_values),
         nullable=False,
         default=DeliveryStatus.PENDING,
     )

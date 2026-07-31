@@ -11,7 +11,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from regradar.core.db import Base
-from regradar.models.enums import FilingDomain, FilingSource, FilingStatus, RiskLevel
+from regradar.models.enums import (
+    FilingDomain,
+    FilingSource,
+    FilingStatus,
+    RiskLevel,
+    pg_enum_values,
+)
 
 if TYPE_CHECKING:
     from regradar.models.brief import Brief
@@ -28,7 +34,7 @@ class Filing(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source: Mapped[FilingSource] = mapped_column(
-        SAEnum(FilingSource, name="filing_source"), nullable=False
+        SAEnum(FilingSource, name="filing_source", values_callable=pg_enum_values), nullable=False
     )
     source_document_id: Mapped[str] = mapped_column(Text, nullable=False)
     entity_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -38,15 +44,15 @@ class Filing(Base):
     published_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     ingested_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     status: Mapped[FilingStatus] = mapped_column(
-        SAEnum(FilingStatus, name="filing_status"),
+        SAEnum(FilingStatus, name="filing_status", values_callable=pg_enum_values),
         nullable=False,
         default=FilingStatus.INGESTED,
     )
     domain: Mapped[FilingDomain | None] = mapped_column(
-        SAEnum(FilingDomain, name="filing_domain"), nullable=True
+        SAEnum(FilingDomain, name="filing_domain", values_callable=pg_enum_values), nullable=True
     )
     risk_level: Mapped[RiskLevel | None] = mapped_column(
-        SAEnum(RiskLevel, name="risk_level"), nullable=True
+        SAEnum(RiskLevel, name="risk_level", values_callable=pg_enum_values), nullable=True
     )
     priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     classification_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)

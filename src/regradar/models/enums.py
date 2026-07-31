@@ -3,6 +3,17 @@
 import enum
 
 
+def pg_enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    """values_callable for SQLAlchemy's Enum column type.
+
+    Without this, SQLAlchemy serializes a Python enum using its *member
+    name* (e.g. "INGESTED") rather than its *value* (e.g. "ingested"), which
+    doesn't match the lowercase Postgres ENUM types created in migrations —
+    every SAEnum(...) column definition in models/ must pass this.
+    """
+    return [member.value for member in enum_cls]
+
+
 class FilingSource(str, enum.Enum):
     SEC = "SEC"
     FDA = "FDA"

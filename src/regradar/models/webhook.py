@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from regradar.core.db import Base
-from regradar.models.enums import RiskLevel
+from regradar.models.enums import RiskLevel, pg_enum_values
 
 if TYPE_CHECKING:
     from regradar.models.api_key import ApiKey
@@ -30,7 +30,7 @@ class Webhook(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     filter_domain: Mapped[str | None] = mapped_column(Text, nullable=True)
     filter_min_risk: Mapped[RiskLevel | None] = mapped_column(
-        SAEnum(RiskLevel, name="risk_level"), nullable=True
+        SAEnum(RiskLevel, name="risk_level", values_callable=pg_enum_values), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 

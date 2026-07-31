@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from regradar.core.db import Base
-from regradar.models.enums import EvalRunType
+from regradar.models.enums import EvalRunType, pg_enum_values
 
 
 class EvalRun(Base):
@@ -18,7 +18,7 @@ class EvalRun(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     run_type: Mapped[EvalRunType] = mapped_column(
-        SAEnum(EvalRunType, name="eval_run_type"), nullable=False
+        SAEnum(EvalRunType, name="eval_run_type", values_callable=pg_enum_values), nullable=False
     )
     prompt_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     git_commit_sha: Mapped[str | None] = mapped_column(Text, nullable=True)

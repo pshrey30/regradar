@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from regradar.core.db import Base
-from regradar.models.enums import FilingSource
+from regradar.models.enums import FilingSource, pg_enum_values
 
 
 class SourceConfig(Base):
@@ -18,7 +18,7 @@ class SourceConfig(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source: Mapped[FilingSource] = mapped_column(
-        SAEnum(FilingSource, name="filing_source"), nullable=False
+        SAEnum(FilingSource, name="filing_source", values_callable=pg_enum_values), nullable=False
     )
     domains: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
