@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+  <channel>
+    <title>What's New: Drugs RSS Feed</title>
+    <link>http://www.fda.gov/</link>
+    <description>Sample fixture feed for unit tests</description>
+    <language>en</language>
+    <item>
+      <title>Sample Drug Guidance Update</title>
+      <link>http://www.fda.gov/drugs/sample-guidance-update-1</link>
+      <description>Fixture item for testing normal feed parsing.</description>
+      <pubDate>Thu, 30 Jul 2026 16:47:16 EDT</pubDate>
+      <dc:creator>FDA</dc:creator>
+      <guid isPermaLink="true">http://www.fda.gov/drugs/sample-guidance-update-1</guid>
+    </item>
+    <item>
+      <title>Sample Warning Letter Notice</title>
+      <link>http://www.fda.gov/drugs/sample-warning-letter-2</link>
+      <description>Second fixture item for testing normal feed parsing.</description>
+      <pubDate>Wed, 29 Jul 2026 10:15:00 EDT</pubDate>
+      <dc:creator>FDA</dc:creator>
+      <guid isPermaLink="true">http://www.fda.gov/drugs/sample-warning-letter-2</guid>
+    </item>
+  </channel>
+</rss>

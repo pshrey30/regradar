@@ -21,6 +21,7 @@ class SourceConfig(Base):
         SAEnum(FilingSource, name="filing_source", values_callable=pg_enum_values), nullable=False
     )
     domains: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    feed_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     poll_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
     last_polled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)

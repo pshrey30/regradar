@@ -24,7 +24,6 @@ conditional-GET based.
 
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
@@ -33,23 +32,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.core.config import get_settings
+from regradar.ingestion.types import NewFiling
 from regradar.models.enums import FilingSource, FilingStatus
 from regradar.models.filing import Filing
 from regradar.models.source_config import SourceConfig
 
 EDGAR_CURRENT_FEED_URL = "https://www.sec.gov/cgi-bin/browse-edgar"
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
-
-
-@dataclass
-class NewFiling:
-    """A candidate filing parsed from EDGAR, not yet confirmed persisted."""
-
-    source_document_id: str
-    entity_name: str
-    filing_type: str
-    filing_url: str
-    published_at: datetime
 
 
 class _EdgarRateLimiter:
