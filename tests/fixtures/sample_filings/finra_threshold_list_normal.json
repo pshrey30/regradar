@@ -1,0 +1,22 @@
+[
+  {
+    "regShoThresholdFlag": "N",
+    "issueSymbolIdentifier": "SAMPA",
+    "issueName": "Sample Corp A Ordinary Shares",
+    "thresholdListFlag": "NR",
+    "marketCategoryDescription": "Other OTC",
+    "rule4320Flag": "Y",
+    "tradeDate": "2026-08-04",
+    "marketClassCode": "OTC"
+  },
+  {
+    "regShoThresholdFlag": "Y",
+    "issueSymbolIdentifier": "SAMPB",
+    "issueName": "Sample Corp B American Depositary Receipts",
+    "thresholdListFlag": "R",
+    "marketCategoryDescription": "Other OTC",
+    "rule4320Flag": "N",
+    "tradeDate": "2026-08-04",
+    "marketClassCode": "OTC"
+  }
+]

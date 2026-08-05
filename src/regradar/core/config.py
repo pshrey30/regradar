@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     sec_edgar_rate_limit_per_sec: int = Field(default=10, alias="SEC_EDGAR_RATE_LIMIT_PER_SEC")
     fda_rss_feed_url: str | None = Field(default=None, alias="FDA_RSS_FEED_URL")
     finra_feed_url: str | None = Field(default=None, alias="FINRA_FEED_URL")
+    finra_client_id: SecretStr | None = Field(default=None, alias="FINRA_CLIENT_ID")
+    finra_client_secret: SecretStr | None = Field(default=None, alias="FINRA_CLIENT_SECRET")
     ingestion_poll_interval_seconds: int = Field(
         default=300, alias="INGESTION_POLL_INTERVAL_SECONDS"
     )
