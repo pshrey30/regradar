@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from regradar.models.enums import FilingStatus
+from regradar.models.filing import Filing
 from regradar.workers.pipeline_tasks import (
     _mark_filing_failed,
     _ProcessFilingTask,
@@ -40,9 +41,47 @@ def test_enqueue_filing_processing_calls_delay_with_str_id() -> None:
         mock_delay.assert_called_once_with(str(filing_id))
 
 
-def test_process_filing_stub_runs_without_error() -> None:
-    # Calling the task function directly (not via .delay()) runs it eagerly,
-    # in-process — the stub just logs, so this only needs to not raise.
+def test_process_filing_runs_the_pipeline_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+
+    # Calling .run() executes the task body eagerly, in-process.
+    process_filing.run(str(filing_id))
+
+    mock_db.get.assert_awaited_once_with(Filing, filing_id)
+
+
+def test_process_filing_skips_pipeline_when_filing_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=None)
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+
+    # Should not raise even though the filing doesn't exist.
     process_filing.run(str(uuid.uuid4()))
 
 

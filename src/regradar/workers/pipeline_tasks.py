@@ -1,9 +1,10 @@
 """Celery tasks that hand a stored filing off to the agent pipeline asynchronously.
 
-`process_filing` is stubbed for now — the real LangGraph supervisor graph
-is built in AGENT-01. This ticket's job is the queue plumbing: reliable
-retry with backoff, and a guarantee that a filing never silently
-disappears if the task ultimately fails.
+`process_filing` builds the initial pipeline state from a stored filing
+and runs it through the LangGraph supervisor graph (AGENT-01). This
+module's job is the queue plumbing: reliable retry with backoff, and a
+guarantee that a filing never silently disappears if the task ultimately
+fails.
 """
 
 import asyncio
@@ -12,6 +13,8 @@ import uuid
 from celery import Task
 from celery.utils.log import get_task_logger
 
+from regradar.agents.graph import build_graph
+from regradar.agents.state import PipelineState
 from regradar.core.db import get_session_factory
 from regradar.models.enums import FilingStatus
 from regradar.models.filing import Filing
@@ -30,6 +33,22 @@ async def _mark_filing_failed(filing_id: str, error_message: str) -> None:
         filing.status = FilingStatus.FAILED
         filing.processing_error = error_message
         await db.commit()
+
+
+async def _run_pipeline_for_filing(filing_id: str) -> None:
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        filing = await db.get(Filing, uuid.UUID(filing_id))
+        if filing is None:
+            logger.warning("Filing %s not found — skipping pipeline run", filing_id)
+            return
+
+    # Real PDF-to-text extraction doesn't exist yet — AGENT-04's chunking
+    # work extracts filing text from the stored S3 PDF. Until then, the
+    # pipeline runs against an empty raw_text; every node in AGENT-01 is a
+    # stub anyway, so this doesn't block wiring the queue to the graph.
+    state = PipelineState(filing_id=filing.id, raw_text="")
+    build_graph().invoke(state)
 
 
 class _ProcessFilingTask(Task):
@@ -61,8 +80,8 @@ class _ProcessFilingTask(Task):
     retry_jitter=True,
 )
 def process_filing(self: Task, filing_id: str) -> None:
-    """Run the agent pipeline for one filing. Stub — see AGENT-01."""
-    logger.info("Processing filing %s (pipeline stub — AGENT-01 not built yet)", filing_id)
+    """Run the agent pipeline for one filing."""
+    asyncio.run(_run_pipeline_for_filing(filing_id))
 
 
 def enqueue_filing_processing(filing_id: uuid.UUID) -> None:
