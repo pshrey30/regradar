@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from regradar.models.enums import FilingStatus
+from regradar.models.enums import FilingDomain, FilingStatus, RiskLevel
 from regradar.models.filing import Filing
 from regradar.workers.pipeline_tasks import (
     _mark_filing_failed,
@@ -41,13 +41,16 @@ def test_enqueue_filing_processing_calls_delay_with_str_id() -> None:
         mock_delay.assert_called_once_with(str(filing_id))
 
 
-def test_process_filing_runs_the_pipeline_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_process_filing_persists_classification_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     filing_id = uuid.uuid4()
     filing = MagicMock()
     filing.id = filing_id
 
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -58,11 +61,64 @@ def test_process_filing_runs_the_pipeline_graph(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(
         pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
     )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            invoke=lambda state: {
+                "domain": FilingDomain.FINANCIAL,
+                "risk_level": RiskLevel.LOW,
+                "classification_confidence": 0.9,
+            }
+        ),
+    )
 
-    # Calling .run() executes the task body eagerly, in-process.
     process_filing.run(str(filing_id))
 
     mock_db.get.assert_awaited_once_with(Filing, filing_id)
+    assert filing.domain == FilingDomain.FINANCIAL
+    assert filing.risk_level == RiskLevel.LOW
+    assert filing.classification_confidence == 0.9
+    assert filing.status == FilingStatus.CLASSIFYING
+    mock_db.commit.assert_awaited_once()
+
+
+def test_process_filing_marks_needs_classification_when_triage_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            invoke=lambda state: {
+                "domain": None,
+                "risk_level": None,
+                "classification_confidence": None,
+            }
+        ),
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert filing.status == FilingStatus.NEEDS_CLASSIFICATION
+    mock_db.commit.assert_awaited_once()
 
 
 def test_process_filing_skips_pipeline_when_filing_not_found(
