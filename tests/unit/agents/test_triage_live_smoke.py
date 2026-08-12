@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from regradar.agents.triage_agent import classify_filing
+from regradar.agents.triage_agent import classify_filing, spot_check_classification
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "triage_smoke_set.json"
 
@@ -35,3 +35,22 @@ def test_classify_filing_live_smoke_test() -> None:
 
     accuracy = correct / len(examples)
     assert accuracy >= 0.8, f"Live smoke test accuracy {accuracy:.2%} below 80% threshold"
+
+
+@pytest.mark.live
+def test_spot_check_classification_live_smoke_test() -> None:
+    """Requires Ollama running locally with llama3.1 pulled, and
+    USE_LOCAL_LLM=true in .env (both already true in this repo's local
+    setup). Start Ollama manually before running this test explicitly
+    (`ollama serve`, or the background-launch pattern used during
+    AGENT-03's design verification) — do not leave it running afterward.
+    """
+    result = spot_check_classification(
+        "The company disclosed a material weakness in internal controls "
+        "over financial reporting and must remediate within 90 days."
+    )
+
+    assert result is not None
+    assert result.domain.value in ("financial", "clinical", "environmental", "other")
+    assert result.risk_level.value in ("low", "medium", "high", "critical")
+    assert len(result.reasoning) > 0
