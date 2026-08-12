@@ -13,8 +13,9 @@ from regradar.agents.triage_agent import (
     ClassificationResult,
     TriageClassificationError,
     classify_filing,
+    derive_risk_level,
 )
-from regradar.models.enums import FilingDomain
+from regradar.models.enums import FilingDomain, RiskLevel
 
 
 def _mock_response(json_body: list[dict], status_code: int = 200) -> MagicMock:
@@ -93,3 +94,43 @@ def test_classify_filing_raises_after_both_attempts_fail(
             classify_filing("some text")
 
         assert mock_post.call_count == 2
+
+
+def test_derive_risk_level_critical_keyword_overrides_high_confidence() -> None:
+    text = "The company disclosed a material weakness in internal controls."
+
+    result = derive_risk_level(FilingDomain.FINANCIAL, confidence=0.95, text=text)
+
+    assert result == RiskLevel.CRITICAL
+
+
+def test_derive_risk_level_high_keyword() -> None:
+    text = "The FDA issued a warning letter regarding manufacturing practices."
+
+    result = derive_risk_level(FilingDomain.CLINICAL, confidence=0.9, text=text)
+
+    assert result == RiskLevel.HIGH
+
+
+def test_derive_risk_level_low_confidence_with_no_keywords_is_medium() -> None:
+    text = "Routine quarterly filing with no notable events."
+
+    result = derive_risk_level(FilingDomain.FINANCIAL, confidence=0.3, text=text)
+
+    assert result == RiskLevel.MEDIUM
+
+
+def test_derive_risk_level_confident_and_clean_is_low() -> None:
+    text = "Routine quarterly filing with no notable events."
+
+    result = derive_risk_level(FilingDomain.FINANCIAL, confidence=0.9, text=text)
+
+    assert result == RiskLevel.LOW
+
+
+def test_derive_risk_level_low_confidence_but_critical_keyword_is_still_critical() -> None:
+    text = "Preliminary indication of possible fraud under review."
+
+    result = derive_risk_level(FilingDomain.FINANCIAL, confidence=0.2, text=text)
+
+    assert result == RiskLevel.CRITICAL
