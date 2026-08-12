@@ -152,7 +152,7 @@ def spot_check_classification(text: str) -> SpotCheckResult | None:
             ],
             temperature=0,
         )
-        content = response.choices[0].message.content
+        content = response.choices[0].message.content or ""
         parsed = json.loads(content)
         return SpotCheckResult(
             domain=FilingDomain(parsed["domain"]),
