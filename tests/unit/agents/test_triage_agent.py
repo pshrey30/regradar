@@ -4,16 +4,19 @@ test_triage_live_smoke.py for the one test allowed to hit the real API.
 """
 
 import time
+import uuid
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
+from regradar.agents.state import PipelineState
 from regradar.agents.triage_agent import (
     ClassificationResult,
     TriageClassificationError,
     classify_filing,
     derive_risk_level,
+    triage_node,
 )
 from regradar.models.enums import FilingDomain, RiskLevel
 
@@ -134,3 +137,31 @@ def test_derive_risk_level_low_confidence_but_critical_keyword_is_still_critical
     result = derive_risk_level(FilingDomain.FINANCIAL, confidence=0.2, text=text)
 
     assert result == RiskLevel.CRITICAL
+
+
+def _make_state() -> PipelineState:
+    return PipelineState(filing_id=uuid.uuid4(), raw_text="Routine filing text.")
+
+
+def test_triage_node_populates_state_on_success() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.9, raw_scores={"financial": 0.9}
+    )
+    with patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result):
+        state = triage_node(_make_state())
+
+    assert state.domain == FilingDomain.FINANCIAL
+    assert state.classification_confidence == 0.9
+    assert state.risk_level == RiskLevel.LOW
+
+
+def test_triage_node_leaves_state_unclassified_on_failure() -> None:
+    with patch(
+        "regradar.agents.triage_agent.classify_filing",
+        side_effect=TriageClassificationError("boom"),
+    ):
+        state = triage_node(_make_state())
+
+    assert state.domain is None
+    assert state.classification_confidence is None
+    assert state.risk_level is None

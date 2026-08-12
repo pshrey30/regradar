@@ -13,6 +13,7 @@ import time
 import httpx
 from pydantic import BaseModel
 
+from regradar.agents.state import PipelineState
 from regradar.core.config import get_settings
 from regradar.models.enums import FilingDomain, RiskLevel
 
@@ -122,3 +123,30 @@ def derive_risk_level(domain: FilingDomain, confidence: float, text: str) -> Ris
     if confidence < LOW_CONFIDENCE_THRESHOLD:
         return RiskLevel.MEDIUM
     return RiskLevel.LOW
+
+
+def triage_node(state: PipelineState) -> PipelineState:
+    """The real triage node — replaces AGENT-01's passthrough stub.
+
+    On success, sets state.domain, state.classification_confidence, and
+    state.risk_level. On TriageClassificationError, leaves those three
+    fields at their default None — workers/pipeline_tasks.py reads this
+    as the signal to mark the filing needs_classification instead of
+    guessing.
+    """
+    try:
+        result = classify_filing(state.raw_text)
+    except TriageClassificationError:
+        logger.error(
+            "Triage classification failed for filing %s; leaving unclassified", state.filing_id
+        )
+        return state
+
+    risk_level = derive_risk_level(result.domain, result.confidence, state.raw_text)
+    return state.model_copy(
+        update={
+            "domain": result.domain,
+            "classification_confidence": result.confidence,
+            "risk_level": risk_level,
+        }
+    )

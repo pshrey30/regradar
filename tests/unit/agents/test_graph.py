@@ -14,7 +14,6 @@ from regradar.agents.graph import (
     retrieve_node,
     route_after_triage,
     summarize_node,
-    triage_node,
 )
 from regradar.agents.state import PipelineState
 from regradar.models.enums import RiskLevel
@@ -26,7 +25,7 @@ def _make_state(risk_level: RiskLevel | None = None) -> PipelineState:
 
 @pytest.mark.parametrize(
     "node",
-    [triage_node, retrieve_node, analyze_node, summarize_node, deliver_node],
+    [retrieve_node, analyze_node, summarize_node, deliver_node],
 )
 def test_stub_node_returns_state_unchanged(node) -> None:
     state = _make_state(risk_level=RiskLevel.HIGH)

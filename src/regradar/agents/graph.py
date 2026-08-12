@@ -1,9 +1,9 @@
 """The LangGraph supervisor graph wiring the six pipeline agents together.
 
-Every node function here is a stub for AGENT-01 — each later ticket
-(AGENT-02, AGENT-06, AGENT-07, AGENT-08, AGENT-10) replaces exactly one
-node's body with real behavior. The graph wiring and the triage routing
-decision are the real, permanent parts of this module.
+triage_node is the real implementation (AGENT-02) — every other node
+here is still a stub for a later ticket (AGENT-06, AGENT-07, AGENT-08,
+AGENT-10). The graph wiring and the triage routing decision are the
+real, permanent parts of this module.
 """
 
 from typing import Literal
@@ -12,12 +12,8 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from regradar.agents.state import PipelineState
+from regradar.agents.triage_agent import triage_node
 from regradar.models.enums import RiskLevel
-
-
-def triage_node(state: PipelineState) -> PipelineState:
-    """Stub — replaced by the real zero-shot classifier in AGENT-02."""
-    return state
 
 
 def retrieve_node(state: PipelineState) -> PipelineState:
