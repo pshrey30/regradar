@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     tier_high_model: str = Field(default="gpt-4o", alias="TIER_HIGH_MODEL")
     tier_low_model: str = Field(default="granite-13b", alias="TIER_LOW_MODEL")
     tier_routing_risk_threshold: str = Field(default="high", alias="TIER_ROUTING_RISK_THRESHOLD")
+    classification_confidence_threshold: float = Field(
+        default=0.75, alias="CLASSIFICATION_CONFIDENCE_THRESHOLD"
+    )
 
     # ── Local inference — portfolio/demo cost control (ADR-05) ──────
     # When enabled, agents route through locally-hosted models instead of
