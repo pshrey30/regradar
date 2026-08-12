@@ -43,12 +43,20 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             logger.warning("Filing %s not found — skipping pipeline run", filing_id)
             return
 
-    # Real PDF-to-text extraction doesn't exist yet — AGENT-04's chunking
-    # work extracts filing text from the stored S3 PDF. Until then, the
-    # pipeline runs against an empty raw_text; every node in AGENT-01 is a
-    # stub anyway, so this doesn't block wiring the queue to the graph.
-    state = PipelineState(filing_id=filing.id, raw_text="")
-    build_graph().invoke(state)
+        # Real PDF-to-text extraction doesn't exist yet — AGENT-04's
+        # chunking work extracts filing text from the stored S3 PDF. Until
+        # then, the pipeline runs against an empty raw_text.
+        state = PipelineState(filing_id=filing.id, raw_text="")
+        result = build_graph().invoke(state)
+
+        if result["domain"] is None:
+            filing.status = FilingStatus.NEEDS_CLASSIFICATION
+        else:
+            filing.domain = result["domain"]
+            filing.risk_level = result["risk_level"]
+            filing.classification_confidence = result["classification_confidence"]
+            filing.status = FilingStatus.CLASSIFYING
+        await db.commit()
 
 
 class _ProcessFilingTask(Task):

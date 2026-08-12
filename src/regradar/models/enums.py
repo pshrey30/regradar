@@ -23,6 +23,7 @@ class FilingSource(str, enum.Enum):
 class FilingStatus(str, enum.Enum):
     INGESTED = "ingested"
     CLASSIFYING = "classifying"
+    NEEDS_CLASSIFICATION = "needs_classification"
     RETRIEVING = "retrieving"
     ANALYZING = "analyzing"
     SUMMARIZING = "summarizing"
