@@ -7,10 +7,12 @@ no DB access — matching every other node in agents/graph.py; DB
 persistence happens in workers/pipeline_tasks.py.
 """
 
+import json
 import logging
 import time
 
 import httpx
+from openai import OpenAI
 from pydantic import BaseModel
 
 from regradar.agents.state import PipelineState
@@ -44,6 +46,21 @@ HIGH_KEYWORDS = [
 
 LOW_CONFIDENCE_THRESHOLD = 0.5
 
+SEVERITY_ORDER = {
+    RiskLevel.LOW: 0,
+    RiskLevel.MEDIUM: 1,
+    RiskLevel.HIGH: 2,
+    RiskLevel.CRITICAL: 3,
+}
+
+SPOT_CHECK_SYSTEM_PROMPT = "You are a regulatory filing classifier. Respond with strict JSON only."
+SPOT_CHECK_USER_PROMPT_TEMPLATE = (
+    'Classify this filing into one of ["financial", "clinical", "environmental", "other"], '
+    'and independently assign a risk_level ("low", "medium", "high", "critical") with a brief '
+    'reasoning. Text: "{text}" '
+    'Respond as JSON: {{"domain": ..., "risk_level": ..., "reasoning": ...}}'
+)
+
 
 class TriageClassificationError(Exception):
     """Raised when HF classification fails after one retry."""
@@ -53,6 +70,12 @@ class ClassificationResult(BaseModel):
     domain: FilingDomain
     confidence: float
     raw_scores: dict[str, float]
+
+
+class SpotCheckResult(BaseModel):
+    domain: FilingDomain
+    risk_level: RiskLevel
+    reasoning: str
 
 
 def classify_filing(text: str) -> ClassificationResult:
@@ -98,6 +121,49 @@ def classify_filing(text: str) -> ClassificationResult:
     ) from last_error
 
 
+def _get_llm_client() -> tuple[OpenAI, str]:
+    """Returns (client, model_name), routed to local Ollama or real OpenAI
+    per settings.use_local_llm. Both branches use the same OpenAI SDK
+    class — Ollama's OpenAI-compatible endpoint means no separate client
+    or code path is needed for the two cases.
+    """
+    settings = get_settings()
+    if settings.use_local_llm:
+        return (
+            OpenAI(base_url=settings.local_llm_base_url, api_key="ollama-local"),
+            settings.local_llm_model,
+        )
+    return OpenAI(api_key=settings.openai_api_key.get_secret_value()), settings.tier_high_model
+
+
+def spot_check_classification(text: str) -> SpotCheckResult | None:
+    """Second-opinion classification + risk assessment for a low-confidence
+    filing. Never raises — returns None on any request, parse, or
+    validation error, since this is a safety-net enhancement and a
+    spot-check failure must never break triage.
+    """
+    client, model = _get_llm_client()
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SPOT_CHECK_SYSTEM_PROMPT},
+                {"role": "user", "content": SPOT_CHECK_USER_PROMPT_TEMPLATE.format(text=text)},
+            ],
+            temperature=0,
+        )
+        content = response.choices[0].message.content or ""
+        parsed = json.loads(content)
+        return SpotCheckResult(
+            domain=FilingDomain(parsed["domain"]),
+            risk_level=RiskLevel(parsed["risk_level"]),
+            reasoning=parsed["reasoning"],
+        )
+    except Exception as exc:  # noqa: BLE001 — any failure here must degrade, not raise
+        logger.warning("Spot-check classification failed: %s", exc)
+        return None
+
+
 def derive_risk_level(domain: FilingDomain, confidence: float, text: str) -> RiskLevel:
     """Deterministic keyword + confidence heuristic for an initial risk_level.
 
@@ -133,6 +199,14 @@ def triage_node(state: PipelineState) -> PipelineState:
     fields at their default None — workers/pipeline_tasks.py reads this
     as the signal to mark the filing needs_classification instead of
     guessing.
+
+    If the HF classification's confidence is below
+    settings.classification_confidence_threshold (AGENT-03), a second,
+    independent spot-check model classifies the same filing and assigns
+    its own risk_level opinion. If the spot-check succeeds, the final
+    risk_level is whichever of the two is higher severity — domain
+    always stays HF's, only risk_level is reconciled. A spot-check
+    failure (returns None) leaves the HF-heuristic risk_level unchanged.
     """
     try:
         result = classify_filing(state.raw_text)
@@ -143,6 +217,27 @@ def triage_node(state: PipelineState) -> PipelineState:
         return state
 
     risk_level = derive_risk_level(result.domain, result.confidence, state.raw_text)
+
+    settings = get_settings()
+    if result.confidence < settings.classification_confidence_threshold:
+        spot_result = spot_check_classification(state.raw_text)
+        if spot_result is not None:
+            agreed = spot_result.risk_level == risk_level
+            logger.info(
+                "Dual-model vote for filing %s: hf_domain=%s hf_risk=%s hf_confidence=%.3f "
+                "spot_domain=%s spot_risk=%s spot_reasoning=%r agreed=%s",
+                state.filing_id,
+                result.domain,
+                risk_level,
+                result.confidence,
+                spot_result.domain,
+                spot_result.risk_level,
+                spot_result.reasoning,
+                agreed,
+            )
+            if SEVERITY_ORDER[spot_result.risk_level] > SEVERITY_ORDER[risk_level]:
+                risk_level = spot_result.risk_level
+
     return state.model_copy(
         update={
             "domain": result.domain,

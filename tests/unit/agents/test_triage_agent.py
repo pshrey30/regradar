@@ -5,7 +5,7 @@ test_triage_live_smoke.py for the one test allowed to hit the real API.
 
 import time
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import httpx
 import pytest
@@ -13,9 +13,12 @@ import pytest
 from regradar.agents.state import PipelineState
 from regradar.agents.triage_agent import (
     ClassificationResult,
+    SpotCheckResult,
     TriageClassificationError,
+    _get_llm_client,
     classify_filing,
     derive_risk_level,
+    spot_check_classification,
     triage_node,
 )
 from regradar.models.enums import FilingDomain, RiskLevel
@@ -139,6 +142,83 @@ def test_derive_risk_level_low_confidence_but_critical_keyword_is_still_critical
     assert result == RiskLevel.CRITICAL
 
 
+def _mock_openai_client(content: str) -> MagicMock:
+    client = MagicMock()
+    response = MagicMock()
+    response.choices = [MagicMock(message=MagicMock(content=content))]
+    client.chat.completions.create.return_value = response
+    return client
+
+
+def test_spot_check_classification_returns_parsed_result() -> None:
+    content = (
+        '{"domain": "financial", "risk_level": "high", '
+        '"reasoning": "Material weakness disclosed."}'
+    )
+    with patch(
+        "regradar.agents.triage_agent._get_llm_client",
+        return_value=(_mock_openai_client(content), "llama3.1"),
+    ):
+        result = spot_check_classification("some filing text")
+
+    assert result == SpotCheckResult(
+        domain=FilingDomain.FINANCIAL,
+        risk_level=RiskLevel.HIGH,
+        reasoning="Material weakness disclosed.",
+    )
+
+
+def test_spot_check_classification_returns_none_on_malformed_json() -> None:
+    with patch(
+        "regradar.agents.triage_agent._get_llm_client",
+        return_value=(_mock_openai_client("not valid json"), "llama3.1"),
+    ):
+        result = spot_check_classification("some filing text")
+
+    assert result is None
+
+
+def test_spot_check_classification_returns_none_on_request_error() -> None:
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError("connection refused")
+    with patch("regradar.agents.triage_agent._get_llm_client", return_value=(client, "llama3.1")):
+        result = spot_check_classification("some filing text")
+
+    assert result is None
+
+
+def test_get_llm_client_uses_local_settings_when_use_local_llm_true() -> None:
+    fake_settings = MagicMock()
+    fake_settings.use_local_llm = True
+    fake_settings.local_llm_base_url = "http://localhost:11434/v1"
+    fake_settings.local_llm_model = "llama3.1"
+
+    with (
+        patch("regradar.agents.triage_agent.get_settings", return_value=fake_settings),
+        patch("regradar.agents.triage_agent.OpenAI") as mock_openai_cls,
+    ):
+        _client, model = _get_llm_client()
+
+    mock_openai_cls.assert_called_once_with(base_url="http://localhost:11434/v1", api_key=ANY)
+    assert model == "llama3.1"
+
+
+def test_get_llm_client_uses_real_openai_when_use_local_llm_false() -> None:
+    fake_settings = MagicMock()
+    fake_settings.use_local_llm = False
+    fake_settings.tier_high_model = "gpt-4o"
+    fake_settings.openai_api_key.get_secret_value.return_value = "sk-real"
+
+    with (
+        patch("regradar.agents.triage_agent.get_settings", return_value=fake_settings),
+        patch("regradar.agents.triage_agent.OpenAI") as mock_openai_cls,
+    ):
+        _client, model = _get_llm_client()
+
+    mock_openai_cls.assert_called_once_with(api_key="sk-real")
+    assert model == "gpt-4o"
+
+
 def _make_state() -> PipelineState:
     return PipelineState(filing_id=uuid.uuid4(), raw_text="Routine filing text.")
 
@@ -165,3 +245,65 @@ def test_triage_node_leaves_state_unclassified_on_failure() -> None:
     assert state.domain is None
     assert state.classification_confidence is None
     assert state.risk_level is None
+
+
+def test_triage_node_skips_spot_check_above_confidence_threshold() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.9, raw_scores={"financial": 0.9}
+    )
+    with (
+        patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result),
+        patch("regradar.agents.triage_agent.spot_check_classification") as mock_spot_check,
+    ):
+        triage_node(_make_state())
+
+    mock_spot_check.assert_not_called()
+
+
+def test_triage_node_upgrades_risk_level_when_spot_check_disagrees_higher() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.4, raw_scores={"financial": 0.4}
+    )
+    spot_result = SpotCheckResult(
+        domain=FilingDomain.FINANCIAL, risk_level=RiskLevel.CRITICAL, reasoning="Fraud indicators."
+    )
+    with patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result), patch(
+        "regradar.agents.triage_agent.spot_check_classification", return_value=spot_result
+    ):
+        state = triage_node(_make_state())
+
+    # Base heuristic on 0.4 confidence + no keywords in "Routine filing text." is MEDIUM;
+    # spot-check says CRITICAL — higher severity wins.
+    assert state.risk_level == RiskLevel.CRITICAL
+    assert state.domain == FilingDomain.FINANCIAL  # domain always stays HF's
+
+
+def test_triage_node_keeps_own_risk_level_when_spot_check_agrees_lower() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.4, raw_scores={"financial": 0.4}
+    )
+    spot_result = SpotCheckResult(
+        domain=FilingDomain.FINANCIAL, risk_level=RiskLevel.LOW, reasoning="Looks routine."
+    )
+    with patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result), patch(
+        "regradar.agents.triage_agent.spot_check_classification", return_value=spot_result
+    ):
+        state = triage_node(_make_state())
+
+    # Base heuristic is MEDIUM (low confidence, no keywords); spot-check says LOW —
+    # MEDIUM is higher severity, so it wins.
+    assert state.risk_level == RiskLevel.MEDIUM
+
+
+def test_triage_node_unaffected_when_spot_check_returns_none() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.4, raw_scores={"financial": 0.4}
+    )
+    with (
+        patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result),
+        patch("regradar.agents.triage_agent.spot_check_classification", return_value=None),
+    ):
+        state = triage_node(_make_state())
+
+    assert state.risk_level == RiskLevel.MEDIUM
+    assert state.domain == FilingDomain.FINANCIAL
