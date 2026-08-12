@@ -7,10 +7,12 @@ no DB access — matching every other node in agents/graph.py; DB
 persistence happens in workers/pipeline_tasks.py.
 """
 
+import json
 import logging
 import time
 
 import httpx
+from openai import OpenAI
 from pydantic import BaseModel
 
 from regradar.agents.state import PipelineState
@@ -44,6 +46,21 @@ HIGH_KEYWORDS = [
 
 LOW_CONFIDENCE_THRESHOLD = 0.5
 
+SEVERITY_ORDER = {
+    RiskLevel.LOW: 0,
+    RiskLevel.MEDIUM: 1,
+    RiskLevel.HIGH: 2,
+    RiskLevel.CRITICAL: 3,
+}
+
+SPOT_CHECK_SYSTEM_PROMPT = "You are a regulatory filing classifier. Respond with strict JSON only."
+SPOT_CHECK_USER_PROMPT_TEMPLATE = (
+    'Classify this filing into one of ["financial", "clinical", "environmental", "other"], '
+    'and independently assign a risk_level ("low", "medium", "high", "critical") with a brief '
+    'reasoning. Text: "{text}" '
+    'Respond as JSON: {{"domain": ..., "risk_level": ..., "reasoning": ...}}'
+)
+
 
 class TriageClassificationError(Exception):
     """Raised when HF classification fails after one retry."""
@@ -53,6 +70,12 @@ class ClassificationResult(BaseModel):
     domain: FilingDomain
     confidence: float
     raw_scores: dict[str, float]
+
+
+class SpotCheckResult(BaseModel):
+    domain: FilingDomain
+    risk_level: RiskLevel
+    reasoning: str
 
 
 def classify_filing(text: str) -> ClassificationResult:
@@ -96,6 +119,49 @@ def classify_filing(text: str) -> ClassificationResult:
     raise TriageClassificationError(
         f"HF classification failed after retry: {last_error}"
     ) from last_error
+
+
+def _get_llm_client() -> tuple[OpenAI, str]:
+    """Returns (client, model_name), routed to local Ollama or real OpenAI
+    per settings.use_local_llm. Both branches use the same OpenAI SDK
+    class — Ollama's OpenAI-compatible endpoint means no separate client
+    or code path is needed for the two cases.
+    """
+    settings = get_settings()
+    if settings.use_local_llm:
+        return (
+            OpenAI(base_url=settings.local_llm_base_url, api_key="ollama-local"),
+            settings.local_llm_model,
+        )
+    return OpenAI(api_key=settings.openai_api_key.get_secret_value()), settings.tier_high_model
+
+
+def spot_check_classification(text: str) -> SpotCheckResult | None:
+    """Second-opinion classification + risk assessment for a low-confidence
+    filing. Never raises — returns None on any request, parse, or
+    validation error, since this is a safety-net enhancement and a
+    spot-check failure must never break triage.
+    """
+    client, model = _get_llm_client()
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SPOT_CHECK_SYSTEM_PROMPT},
+                {"role": "user", "content": SPOT_CHECK_USER_PROMPT_TEMPLATE.format(text=text)},
+            ],
+            temperature=0,
+        )
+        content = response.choices[0].message.content
+        parsed = json.loads(content)
+        return SpotCheckResult(
+            domain=FilingDomain(parsed["domain"]),
+            risk_level=RiskLevel(parsed["risk_level"]),
+            reasoning=parsed["reasoning"],
+        )
+    except Exception as exc:  # noqa: BLE001 — any failure here must degrade, not raise
+        logger.warning("Spot-check classification failed: %s", exc)
+        return None
 
 
 def derive_risk_level(domain: FilingDomain, confidence: float, text: str) -> RiskLevel:
