@@ -241,3 +241,63 @@ def test_triage_node_leaves_state_unclassified_on_failure() -> None:
     assert state.domain is None
     assert state.classification_confidence is None
     assert state.risk_level is None
+
+
+def test_triage_node_skips_spot_check_above_confidence_threshold() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.9, raw_scores={"financial": 0.9}
+    )
+    with patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result):
+        with patch("regradar.agents.triage_agent.spot_check_classification") as mock_spot_check:
+            triage_node(_make_state())
+
+    mock_spot_check.assert_not_called()
+
+
+def test_triage_node_upgrades_risk_level_when_spot_check_disagrees_higher() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.4, raw_scores={"financial": 0.4}
+    )
+    spot_result = SpotCheckResult(
+        domain=FilingDomain.FINANCIAL, risk_level=RiskLevel.CRITICAL, reasoning="Fraud indicators."
+    )
+    with patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result):
+        with patch(
+            "regradar.agents.triage_agent.spot_check_classification", return_value=spot_result
+        ):
+            state = triage_node(_make_state())
+
+    # Base heuristic on 0.4 confidence + no keywords in "Routine filing text." is MEDIUM;
+    # spot-check says CRITICAL — higher severity wins.
+    assert state.risk_level == RiskLevel.CRITICAL
+    assert state.domain == FilingDomain.FINANCIAL  # domain always stays HF's
+
+
+def test_triage_node_keeps_own_risk_level_when_spot_check_agrees_lower() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.4, raw_scores={"financial": 0.4}
+    )
+    spot_result = SpotCheckResult(
+        domain=FilingDomain.FINANCIAL, risk_level=RiskLevel.LOW, reasoning="Looks routine."
+    )
+    with patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result):
+        with patch(
+            "regradar.agents.triage_agent.spot_check_classification", return_value=spot_result
+        ):
+            state = triage_node(_make_state())
+
+    # Base heuristic is MEDIUM (low confidence, no keywords); spot-check says LOW —
+    # MEDIUM is higher severity, so it wins.
+    assert state.risk_level == RiskLevel.MEDIUM
+
+
+def test_triage_node_unaffected_when_spot_check_returns_none() -> None:
+    fake_result = ClassificationResult(
+        domain=FilingDomain.FINANCIAL, confidence=0.4, raw_scores={"financial": 0.4}
+    )
+    with patch("regradar.agents.triage_agent.classify_filing", return_value=fake_result):
+        with patch("regradar.agents.triage_agent.spot_check_classification", return_value=None):
+            state = triage_node(_make_state())
+
+    assert state.risk_level == RiskLevel.MEDIUM
+    assert state.domain == FilingDomain.FINANCIAL
