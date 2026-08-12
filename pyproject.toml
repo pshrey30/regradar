@@ -73,3 +73,7 @@ follow_imports_for_stubs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "live: hits a real external API — excluded by default, run explicitly with `pytest -m live`",
+]
+addopts = "-m 'not live'"

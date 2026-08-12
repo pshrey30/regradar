@@ -1,0 +1,14 @@
+[
+  {"text": "The Company filed its Annual Report on Form 10-K disclosing revenue growth of 12% and no material weaknesses in internal controls.", "expected_domain": "financial"},
+  {"text": "The registrant reported a decline in quarterly earnings and updated its risk factors related to interest rate exposure.", "expected_domain": "financial"},
+  {"text": "Shareholders approved an increase in the company's authorized share capital at the annual general meeting.", "expected_domain": "financial"},
+  {"text": "The FDA approved a new drug application for a treatment targeting chronic migraine following successful Phase 3 clinical trials.", "expected_domain": "clinical"},
+  {"text": "A voluntary recall was issued for a batch of injectable medication due to a labeling error identified during routine quality control.", "expected_domain": "clinical"},
+  {"text": "The company announced results from a Phase 2 clinical trial evaluating a novel treatment for type 2 diabetes.", "expected_domain": "clinical"},
+  {"text": "The facility reported an unplanned release of wastewater exceeding permitted discharge limits into a nearby river.", "expected_domain": "environmental"},
+  {"text": "The company submitted its annual greenhouse gas emissions report to the Environmental Protection Agency.", "expected_domain": "environmental"},
+  {"text": "An environmental impact assessment was filed ahead of the proposed expansion of the manufacturing plant.", "expected_domain": "environmental"},
+  {"text": "The board announced the appointment of a new independent director to serve a three-year term.", "expected_domain": "other"},
+  {"text": "The company changed its corporate headquarters address and updated its registered agent information.", "expected_domain": "other"},
+  {"text": "A routine administrative notice was filed updating the company's fiscal year end date.", "expected_domain": "other"}
+]
