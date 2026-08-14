@@ -10,7 +10,7 @@ sample_filing_table_heavy.txt were produced.
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from regradar.rag.chunking import Chunk, TableBlock, chunk_filing
+from regradar.rag.chunking import TableBlock, chunk_filing
 
 FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "sample_filings"
 
