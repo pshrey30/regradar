@@ -52,7 +52,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             try:
                 pdf_bytes = fetch_pdf_bytes(filing.raw_pdf_s3_key)
                 raw_text, tables = extract_text_and_tables(pdf_bytes)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — never crash the pipeline over a bad/missing PDF
                 logger.warning("PDF extraction failed for filing %s: %s", filing_id, exc)
 
         state = PipelineState(filing_id=filing.id, raw_text=raw_text)

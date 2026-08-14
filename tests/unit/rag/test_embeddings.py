@@ -119,9 +119,8 @@ async def test_embed_chunks_raises_after_all_retries_fail_and_never_touches_db(
     with patch(
         "regradar.rag.embeddings._get_embedding_client",
         return_value=(mock_client, "nomic-embed-text"),
-    ):
-        with pytest.raises(EmbeddingError):
-            await embed_chunks(filing_id, chunks, mock_db)
+    ), pytest.raises(EmbeddingError):
+        await embed_chunks(filing_id, chunks, mock_db)
 
     assert mock_client.embeddings.create.call_count == 3
     mock_db.add_all.assert_not_called()
