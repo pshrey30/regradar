@@ -26,6 +26,7 @@ dependencies = [
     "feedparser>=6.0",
     "prefect>=2.19",
     "tiktoken>=0.7",
+    "pdfplumber>=0.11",
 ]
 
 [project.optional-dependencies]

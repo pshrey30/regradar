@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     )
     local_llm_model: str = Field(default="llama3.1", alias="LOCAL_LLM_MODEL")
     use_local_hf_inference: bool = Field(default=False, alias="USE_LOCAL_HF_INFERENCE")
+    use_local_embeddings: bool = Field(default=False, alias="USE_LOCAL_EMBEDDINGS")
+    local_embedding_model: str = Field(default="nomic-embed-text", alias="LOCAL_EMBEDDING_MODEL")
 
     # ── Ingestion sources ────────────────────────────────────
     sec_edgar_user_agent: str = Field(alias="SEC_EDGAR_USER_AGENT")
