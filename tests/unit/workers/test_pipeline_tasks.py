@@ -26,6 +26,7 @@ import pytest
 
 from regradar.models.enums import FilingDomain, FilingStatus, RiskLevel
 from regradar.models.filing import Filing
+from regradar.rag.chunking import Chunk
 from regradar.workers.pipeline_tasks import (
     _mark_filing_failed,
     _ProcessFilingTask,
@@ -47,6 +48,7 @@ def test_process_filing_persists_classification_on_success(
     filing_id = uuid.uuid4()
     filing = MagicMock()
     filing.id = filing_id
+    filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(return_value=filing)
@@ -89,6 +91,7 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
     filing_id = uuid.uuid4()
     filing = MagicMock()
     filing.id = filing_id
+    filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(return_value=filing)
@@ -119,6 +122,158 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
 
     assert filing.status == FilingStatus.NEEDS_CLASSIFICATION
     mock_db.commit.assert_awaited_once()
+
+
+def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = "filings/abc123.pdf"
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            invoke=lambda state: {
+                "domain": FilingDomain.FINANCIAL,
+                "risk_level": RiskLevel.LOW,
+                "classification_confidence": 0.9,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module, "fetch_pdf_bytes", lambda s3_key: b"fake pdf bytes"
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "extract_text_and_tables",
+        lambda pdf_bytes: ("Item 1. Real extracted filing text.", []),
+    )
+    fake_chunks = [
+        Chunk(
+            chunk_index=0,
+            chunk_text="Item 1. Real extracted filing text.",
+            section_reference="Item 1.",
+            token_count=6,
+            is_table=False,
+        )
+    ]
+    monkeypatch.setattr(
+        pipeline_tasks_module, "chunk_filing", lambda text, tables: fake_chunks
+    )
+    mock_embed_chunks = AsyncMock()
+    monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
+
+    process_filing.run(str(filing_id))
+
+    mock_embed_chunks.assert_awaited_once_with(filing_id, fake_chunks, mock_db)
+
+
+def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = "filings/abc123.pdf"
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+
+    captured_state = {}
+
+    def _fake_invoke(state):
+        captured_state["raw_text"] = state.raw_text
+        return {
+            "domain": FilingDomain.FINANCIAL,
+            "risk_level": RiskLevel.LOW,
+            "classification_confidence": 0.9,
+        }
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "build_graph", lambda: MagicMock(invoke=_fake_invoke)
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "fetch_pdf_bytes",
+        MagicMock(side_effect=RuntimeError("S3 unavailable")),
+    )
+    mock_embed_chunks = AsyncMock()
+    monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
+
+    process_filing.run(str(filing_id))
+
+    assert captured_state["raw_text"] == ""
+    mock_embed_chunks.assert_not_awaited()
+
+
+def test_process_filing_skips_extraction_when_no_pdf_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            invoke=lambda state: {
+                "domain": FilingDomain.FINANCIAL,
+                "risk_level": RiskLevel.LOW,
+                "classification_confidence": 0.9,
+            }
+        ),
+    )
+    mock_fetch = MagicMock()
+    monkeypatch.setattr(pipeline_tasks_module, "fetch_pdf_bytes", mock_fetch)
+    mock_embed_chunks = AsyncMock()
+    monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
+
+    process_filing.run(str(filing_id))
+
+    mock_fetch.assert_not_called()
+    mock_embed_chunks.assert_not_awaited()
 
 
 def test_process_filing_skips_pipeline_when_filing_not_found(

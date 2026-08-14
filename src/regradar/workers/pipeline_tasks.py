@@ -18,6 +18,9 @@ from regradar.agents.state import PipelineState
 from regradar.core.db import get_session_factory
 from regradar.models.enums import FilingStatus
 from regradar.models.filing import Filing
+from regradar.rag.chunking import chunk_filing
+from regradar.rag.embeddings import embed_chunks
+from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_pdf_bytes
 from regradar.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
@@ -43,10 +46,16 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             logger.warning("Filing %s not found — skipping pipeline run", filing_id)
             return
 
-        # Real PDF-to-text extraction doesn't exist yet — AGENT-04's
-        # chunking work extracts filing text from the stored S3 PDF. Until
-        # then, the pipeline runs against an empty raw_text.
-        state = PipelineState(filing_id=filing.id, raw_text="")
+        raw_text = ""
+        tables: list = []
+        if filing.raw_pdf_s3_key:
+            try:
+                pdf_bytes = fetch_pdf_bytes(filing.raw_pdf_s3_key)
+                raw_text, tables = extract_text_and_tables(pdf_bytes)
+            except Exception as exc:
+                logger.warning("PDF extraction failed for filing %s: %s", filing_id, exc)
+
+        state = PipelineState(filing_id=filing.id, raw_text=raw_text)
         result = build_graph().invoke(state)
 
         if result["domain"] is None:
@@ -57,6 +66,10 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             filing.classification_confidence = result["classification_confidence"]
             filing.status = FilingStatus.CLASSIFYING
         await db.commit()
+
+        if raw_text:
+            chunks = chunk_filing(raw_text, tables)
+            await embed_chunks(filing.id, chunks, db)
 
 
 class _ProcessFilingTask(Task):
