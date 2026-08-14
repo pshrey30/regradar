@@ -54,6 +54,10 @@ class Settings(BaseSettings):
         default=0.75, alias="CLASSIFICATION_CONFIDENCE_THRESHOLD"
     )
 
+    # ── RAG chunking ─────────────────────────────────────
+    chunk_size_tokens: int = Field(default=512, alias="CHUNK_SIZE_TOKENS")
+    chunk_overlap_tokens: int = Field(default=50, alias="CHUNK_OVERLAP_TOKENS")
+
     # ── Local inference — portfolio/demo cost control (ADR-05) ──────
     # When enabled, agents route through locally-hosted models instead of
     # paid APIs, so demo runs cost $0. Off by default; the real routing

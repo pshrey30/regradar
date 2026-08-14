@@ -43,6 +43,8 @@ def test_all_required_fields_present_loads_with_defaults(
     assert settings.local_llm_base_url == "http://localhost:11434/v1"
     assert settings.local_llm_model == "llama3.1"
     assert settings.classification_confidence_threshold == 0.75
+    assert settings.chunk_size_tokens == 512
+    assert settings.chunk_overlap_tokens == 50
 
 
 def test_sec_edgar_user_agent_requires_contact_email(monkeypatch: pytest.MonkeyPatch) -> None:
