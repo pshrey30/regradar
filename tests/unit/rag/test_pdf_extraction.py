@@ -1,0 +1,74 @@
+"""Unit tests for PDF extraction (fetch_pdf_bytes, extract_text_and_tables).
+
+fetch_pdf_bytes is tested with moto (no real AWS), following the same
+settings-env + cache_clear pattern as tests/unit/ingestion/test_pdf_intake.py.
+extract_text_and_tables is NOT mocked — it runs the real pdfplumber parser
+against a real checked-in PDF fixture
+(tests/fixtures/sample_filings/synthetic_table_filing.pdf), generated once
+via a reportlab script during design.
+"""
+
+from pathlib import Path
+
+import boto3
+import pytest
+from moto import mock_aws
+
+from regradar.rag import pdf_extraction
+from regradar.rag.chunking import TableBlock
+from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_pdf_bytes
+
+FIXTURE_PDF = (
+    Path(__file__).parent.parent.parent / "fixtures" / "sample_filings" / "synthetic_table_filing.pdf"
+)
+
+BUCKET_NAME = "test-regradar-bucket"
+
+
+@pytest.fixture(autouse=True)
+def _settings_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("APP_SECRET_KEY", "test")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("S3_BUCKET_NAME", BUCKET_NAME)
+    monkeypatch.setenv("S3_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "test")
+    monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "RegRadar/1.0 (test@example.com)")
+    pdf_extraction.get_settings.cache_clear()
+    yield
+    pdf_extraction.get_settings.cache_clear()
+
+
+@mock_aws
+def test_fetch_pdf_bytes_downloads_from_s3() -> None:
+    client = boto3.client("s3", region_name="us-east-1")
+    client.create_bucket(Bucket=BUCKET_NAME)
+    client.put_object(Bucket=BUCKET_NAME, Key="filings/test.pdf", Body=b"fake pdf bytes")
+
+    result = fetch_pdf_bytes("filings/test.pdf")
+
+    assert result == b"fake pdf bytes"
+
+
+def test_extract_text_and_tables_returns_expected_text_and_table_span() -> None:
+    pdf_bytes = FIXTURE_PDF.read_bytes()
+
+    text, tables = extract_text_and_tables(pdf_bytes)
+
+    assert text.startswith("Item 7. Management's Discussion and Analysis")
+    assert "North America 482.3 6.1 1204" in text
+    assert len(tables) == 1
+    assert tables[0] == TableBlock(start_char=207, end_char=322)
+
+
+def test_extract_text_and_tables_table_span_contains_table_content() -> None:
+    pdf_bytes = FIXTURE_PDF.read_bytes()
+
+    text, tables = extract_text_and_tables(pdf_bytes)
+
+    table_slice = text[tables[0].start_char : tables[0].end_char]
+    assert "Region Revenue($M) Growth(%) Headcount" in table_slice
+    assert "Asia Pacific 198.5 9.8 542" in table_slice
