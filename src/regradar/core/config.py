@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     # ── RAG chunking ─────────────────────────────────────
     chunk_size_tokens: int = Field(default=512, alias="CHUNK_SIZE_TOKENS")
     chunk_overlap_tokens: int = Field(default=50, alias="CHUNK_OVERLAP_TOKENS")
+    rag_retrieval_top_k: int = Field(default=5, alias="RAG_RETRIEVAL_TOP_K")
 
     # ── Local inference — portfolio/demo cost control (ADR-05) ──────
     # When enabled, agents route through locally-hosted models instead of
