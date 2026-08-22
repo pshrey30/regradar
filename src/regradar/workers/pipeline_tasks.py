@@ -56,7 +56,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
                 logger.warning("PDF extraction failed for filing %s: %s", filing_id, exc)
 
         state = PipelineState(filing_id=filing.id, raw_text=raw_text)
-        result = build_graph().invoke(state)
+        result = await build_graph().ainvoke(state, config={"configurable": {"db": db}})
 
         if result["domain"] is None:
             filing.status = FilingStatus.NEEDS_CLASSIFICATION

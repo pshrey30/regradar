@@ -1,9 +1,10 @@
 """The LangGraph supervisor graph wiring the six pipeline agents together.
 
-triage_node is the real implementation (AGENT-02) — every other node
-here is still a stub for a later ticket (AGENT-06, AGENT-07, AGENT-08,
-AGENT-10). The graph wiring and the triage routing decision are the
-real, permanent parts of this module.
+triage_node and retrieve_node are real implementations (AGENT-02,
+AGENT-06) — analyze_node/summarize_node/deliver_node are still stubs for
+later tickets. retrieve_node is the only async node; the graph is run
+via ainvoke() (not invoke()) so it can await retrieve_node's DB query —
+LangGraph mixes sync and async nodes transparently in async execution.
 """
 
 from typing import Literal
@@ -11,14 +12,10 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from regradar.agents.rag_retrieval_agent import retrieve_node
 from regradar.agents.state import PipelineState
 from regradar.agents.triage_agent import triage_node
 from regradar.models.enums import RiskLevel
-
-
-def retrieve_node(state: PipelineState) -> PipelineState:
-    """Stub — replaced by the hybrid BM25 + vector retriever in AGENT-06."""
-    return state
 
 
 def analyze_node(state: PipelineState) -> PipelineState:
@@ -51,7 +48,11 @@ def route_after_triage(state: PipelineState) -> Literal["retrieve", "analyze"]:
 
 
 def build_graph() -> CompiledStateGraph:
-    """Compile the pipeline graph. Called fresh each time — no caching."""
+    """Compile the pipeline graph. Called fresh each time — no caching.
+
+    Run via ainvoke(state, config={"configurable": {"db": db}}) — the
+    retrieve node needs a DB session passed through this mechanism.
+    """
     graph = StateGraph(PipelineState)
 
     graph.add_node("triage", triage_node)

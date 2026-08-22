@@ -67,11 +67,13 @@ def test_process_filing_persists_classification_on_success(
         pipeline_tasks_module,
         "build_graph",
         lambda: MagicMock(
-            invoke=lambda state: {
-                "domain": FilingDomain.FINANCIAL,
-                "risk_level": RiskLevel.LOW,
-                "classification_confidence": 0.9,
-            }
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                }
+            )
         ),
     )
 
@@ -110,11 +112,13 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
         pipeline_tasks_module,
         "build_graph",
         lambda: MagicMock(
-            invoke=lambda state: {
-                "domain": None,
-                "risk_level": None,
-                "classification_confidence": None,
-            }
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": None,
+                    "risk_level": None,
+                    "classification_confidence": None,
+                }
+            )
         ),
     )
 
@@ -149,11 +153,13 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
         pipeline_tasks_module,
         "build_graph",
         lambda: MagicMock(
-            invoke=lambda state: {
-                "domain": FilingDomain.FINANCIAL,
-                "risk_level": RiskLevel.LOW,
-                "classification_confidence": 0.9,
-            }
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                }
+            )
         ),
     )
     monkeypatch.setattr(
@@ -208,7 +214,7 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
 
     captured_state = {}
 
-    def _fake_invoke(state):
+    async def _fake_ainvoke(state, config=None):
         captured_state["raw_text"] = state.raw_text
         return {
             "domain": FilingDomain.FINANCIAL,
@@ -217,7 +223,7 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
         }
 
     monkeypatch.setattr(
-        pipeline_tasks_module, "build_graph", lambda: MagicMock(invoke=_fake_invoke)
+        pipeline_tasks_module, "build_graph", lambda: MagicMock(ainvoke=_fake_ainvoke)
     )
     monkeypatch.setattr(
         pipeline_tasks_module,
@@ -258,11 +264,13 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
         pipeline_tasks_module,
         "build_graph",
         lambda: MagicMock(
-            invoke=lambda state: {
-                "domain": FilingDomain.FINANCIAL,
-                "risk_level": RiskLevel.LOW,
-                "classification_confidence": 0.9,
-            }
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                }
+            )
         ),
     )
     mock_fetch = MagicMock()
