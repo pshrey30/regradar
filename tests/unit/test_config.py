@@ -47,6 +47,7 @@ def test_all_required_fields_present_loads_with_defaults(
     assert settings.chunk_overlap_tokens == 50
     assert settings.use_local_embeddings is False
     assert settings.local_embedding_model == "nomic-embed-text"
+    assert settings.rag_retrieval_top_k == 5
 
 
 def test_sec_edgar_user_agent_requires_contact_email(monkeypatch: pytest.MonkeyPatch) -> None:
