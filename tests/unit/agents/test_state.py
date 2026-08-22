@@ -79,3 +79,24 @@ def test_extraction_result_defaults_to_empty_lists() -> None:
     assert extraction.key_entities == []
     assert extraction.competitor_mentions == []
     assert extraction.model_used is None
+
+
+def test_pipeline_state_accepts_chunks_field() -> None:
+    from regradar.rag.chunking import Chunk
+
+    chunk = Chunk(
+        chunk_index=0,
+        chunk_text="Some filing text.",
+        section_reference=None,
+        token_count=4,
+        is_table=False,
+    )
+    state = PipelineState(filing_id=uuid.uuid4(), raw_text="Some filing text.", chunks=[chunk])
+
+    assert state.chunks == [chunk]
+
+
+def test_pipeline_state_chunks_defaults_to_none() -> None:
+    state = PipelineState(filing_id=uuid.uuid4(), raw_text="text")
+
+    assert state.chunks is None

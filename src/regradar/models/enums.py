@@ -24,6 +24,7 @@ class FilingStatus(str, enum.Enum):
     INGESTED = "ingested"
     CLASSIFYING = "classifying"
     NEEDS_CLASSIFICATION = "needs_classification"
+    NEEDS_REVIEW = "needs_review"
     RETRIEVING = "retrieving"
     ANALYZING = "analyzing"
     SUMMARIZING = "summarizing"
