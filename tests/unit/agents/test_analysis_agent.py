@@ -7,11 +7,8 @@ real local Ollama server.
 """
 
 import json
-import time
 import uuid
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from regradar.agents.analysis_agent import analyze_node
 from regradar.agents.state import PipelineState
@@ -127,6 +124,29 @@ def test_analyze_node_rejects_out_of_range_source_chunk_index_and_retries() -> N
         result = analyze_node(_make_state_with_chunks(chunk_count=1))
 
     assert result.extraction is not None
+    assert client.chat.completions.create.call_count == 2
+
+
+def test_analyze_node_leaves_extraction_none_on_wrong_typed_field_without_crashing() -> None:
+    """Reproduces the reviewer's finding: a response with all required keys
+    present but `obligations: null` (or similarly wrong-typed) must not
+    raise an unhandled TypeError out of analyze_node — it must be treated
+    as a validation failure that retries then gives up, leaving
+    state.extraction as None."""
+    bad_json = dict(VALID_EXTRACTION_JSON)
+    bad_json["obligations"] = None
+    client = MagicMock()
+    bad_response = MagicMock()
+    bad_response.choices = [MagicMock(message=MagicMock(content=json.dumps(bad_json)))]
+    client.chat.completions.create.return_value = bad_response
+
+    with patch(
+        "regradar.agents.analysis_agent._get_llm_client",
+        return_value=(client, "llama3.1"),
+    ):
+        result = analyze_node(_make_state_with_chunks())
+
+    assert result.extraction is None
     assert client.chat.completions.create.call_count == 2
 
 

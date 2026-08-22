@@ -14,8 +14,11 @@ so this node has stable chunk identity to cite.
 
 import json
 import logging
+from typing import cast
 
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
+from openai.types.shared_params import ResponseFormatJSONSchema
 
 from regradar.agents.state import ExtractionResult, PipelineState
 from regradar.core.config import get_settings
@@ -106,19 +109,24 @@ def _build_extraction_prompt(state: PipelineState) -> str:
     return f"Filing chunks:\n{chunk_lines}{context_lines}"
 
 
-def _call_extraction_model(prompt: str, strict_retry: bool) -> dict:
-    client, model = _get_llm_client()
+def _call_extraction_model(client: OpenAI, model: str, prompt: str, strict_retry: bool) -> dict:
     system_prompt = EXTRACTION_SYSTEM_PROMPT + (EXTRACTION_RETRY_SUFFIX if strict_retry else "")
+    messages: list[ChatCompletionMessageParam] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+    response_format: ResponseFormatJSONSchema = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "extraction",
+            "schema": cast(dict[str, object], EXTRACTION_SCHEMA),
+            "strict": True,
+        },
+    }
     response = client.chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {"name": "extraction", "schema": EXTRACTION_SCHEMA, "strict": True},
-        },
+        messages=messages,
+        response_format=response_format,
         temperature=0,
     )
     content = response.choices[0].message.content or ""
@@ -126,13 +134,44 @@ def _call_extraction_model(prompt: str, strict_retry: bool) -> dict:
 
 
 def _validate_extraction(parsed: dict, chunk_count: int) -> None:
-    for key in EXTRACTION_SCHEMA["required"]:
-        if key not in parsed:
-            raise AnalysisError(f"Missing required field: {key}")
-    for obligation in parsed["obligations"]:
-        idx = obligation.get("source_chunk_index")
-        if not isinstance(idx, int) or not (0 <= idx < chunk_count):
-            raise AnalysisError(f"Invalid source_chunk_index: {idx!r}")
+    """Validate both presence AND type of every required field.
+
+    Any malformed shape (wrong type, non-dict obligation entries, etc.)
+    raises AnalysisError so analyze_node's except clause treats it as a
+    validation failure — never lets a TypeError/AttributeError/KeyError
+    escape and crash the pipeline.
+    """
+    try:
+        for key in EXTRACTION_SCHEMA["required"]:
+            if key not in parsed:
+                raise AnalysisError(f"Missing required field: {key}")
+
+        list_fields = (
+            "obligations",
+            "deadlines",
+            "risk_flags",
+            "affected_products",
+            "key_entities",
+            "competitor_mentions",
+        )
+        for field in list_fields:
+            if not isinstance(parsed[field], list):
+                raise AnalysisError(
+                    f"Field {field!r} must be a list, got {type(parsed[field]).__name__}"
+                )
+
+        for obligation in parsed["obligations"]:
+            if not isinstance(obligation, dict):
+                raise AnalysisError(f"Invalid obligation entry: {obligation!r}")
+            idx = obligation.get("source_chunk_index")
+            if not isinstance(idx, int) or not (0 <= idx < chunk_count):
+                raise AnalysisError(f"Invalid source_chunk_index: {idx!r}")
+    except AnalysisError:
+        raise
+    except Exception as exc:
+        # Any other malformed-shape error (e.g. .get() on a non-dict,
+        # unexpected nesting) is still a validation failure, not a crash.
+        raise AnalysisError(f"Malformed extraction response: {exc}") from exc
 
 
 def analyze_node(state: PipelineState) -> PipelineState:
@@ -150,12 +189,12 @@ def analyze_node(state: PipelineState) -> PipelineState:
         return state
 
     prompt = _build_extraction_prompt(state)
-    _, model_name = _get_llm_client()
+    client, model_name = _get_llm_client()
 
     last_error: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
         try:
-            parsed = _call_extraction_model(prompt, strict_retry=attempt > 0)
+            parsed = _call_extraction_model(client, model_name, prompt, strict_retry=attempt > 0)
             _validate_extraction(parsed, len(state.chunks))
             extraction = ExtractionResult(
                 obligations=parsed["obligations"],
