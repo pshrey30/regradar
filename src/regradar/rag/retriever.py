@@ -76,7 +76,7 @@ async def retrieve_similar_filings(
         .limit(top_k * DENSE_CANDIDATE_MULTIPLIER)
     )
     result = await db.execute(stmt)
-    candidate_chunks = list(result.scalars().all())
+    candidate_chunks = [c for c in result.scalars().all() if c.embedding is not None]
 
     if not candidate_chunks:
         return []
@@ -90,13 +90,12 @@ async def retrieve_similar_filings(
         for chunk in candidate_chunks
     ]
 
-    dense_results = [
-        NodeWithScore(
-            node=node,
-            score=1.0 - _cosine_distance(chunk.embedding, query_embedding),
+    dense_results = []
+    for node, chunk in zip(nodes, candidate_chunks, strict=True):
+        assert chunk.embedding is not None
+        dense_results.append(
+            NodeWithScore(node=node, score=1.0 - _cosine_distance(chunk.embedding, query_embedding))
         )
-        for node, chunk in zip(nodes, candidate_chunks, strict=True)
-    ]
     dense_retriever = DenseFilingChunkRetriever(dense_results)
 
     bm25_retriever = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=len(nodes))
@@ -127,7 +126,7 @@ async def retrieve_similar_filings(
         output.append(
             RetrievedChunk(
                 filing_id=UUID(filing_id_str),
-                chunk_text=item.node.text,
+                chunk_text=item.node.get_content(),
                 score=item.score or 0.0,
             )
         )
