@@ -9,7 +9,6 @@ import uuid
 import pytest
 
 from regradar.agents.graph import (
-    analyze_node,
     deliver_node,
     route_after_triage,
     summarize_node,
@@ -24,7 +23,7 @@ def _make_state(risk_level: RiskLevel | None = None) -> PipelineState:
 
 @pytest.mark.parametrize(
     "node",
-    [analyze_node, summarize_node, deliver_node],
+    [deliver_node, summarize_node],
 )
 def test_stub_node_returns_state_unchanged(node) -> None:
     state = _make_state(risk_level=RiskLevel.HIGH)

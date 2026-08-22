@@ -1,14 +1,13 @@
 """End-to-end integration test for the compiled LangGraph pipeline graph.
 
-No real database is needed here — analyze/summarize/deliver are stubs
-operating purely on in-memory PipelineState, and both triage_node and
-retrieve_node are monkeypatched with fakes (triage_node would otherwise
-make a live HF API call; retrieve_node would otherwise need a real DB
-session) — per this project's cost/supervision policy, automated tests
-never call a paid API or need real infrastructure by default. Real
-retrieval behavior is covered separately in
-tests/unit/rag/test_retriever.py and
-tests/unit/agents/test_rag_retrieval_agent.py.
+No real database is needed here — summarize/deliver are stubs operating
+purely on in-memory PipelineState, and triage_node/retrieve_node/
+analyze_node are all monkeypatched with fakes (each would otherwise
+need live infrastructure: triage a live HF API call, retrieve a real DB
+session, analyze a live Ollama call) — per this project's
+cost/supervision policy, automated tests never call a paid API or need
+real infrastructure by default. Real analysis behavior is covered
+separately in tests/unit/agents/test_analysis_agent.py.
 
 This test's job is to confirm the graph wiring itself (including the
 conditional retrieve-skip edge and the async retrieve node) behaves as
@@ -39,9 +38,14 @@ async def _fake_retrieve_node(state: PipelineState, config) -> PipelineState:
     return state
 
 
+def _fake_analyze_node(state: PipelineState) -> PipelineState:
+    return state
+
+
 async def test_graph_runs_end_to_end_and_reaches_deliver(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(graph_module, "triage_node", _fake_triage_node_setting(RiskLevel.HIGH))
     monkeypatch.setattr(graph_module, "retrieve_node", _fake_retrieve_node)
+    monkeypatch.setattr(graph_module, "analyze_node", _fake_analyze_node)
     compiled = graph_module.build_graph()
     state = _make_state()
 
@@ -53,6 +57,7 @@ async def test_graph_runs_end_to_end_and_reaches_deliver(monkeypatch: pytest.Mon
 
 async def test_unclassified_filing_takes_the_retrieve_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(graph_module, "triage_node", _fake_triage_node_setting(None))
+    monkeypatch.setattr(graph_module, "analyze_node", _fake_analyze_node)
 
     calls: list[str] = []
 
@@ -70,6 +75,7 @@ async def test_unclassified_filing_takes_the_retrieve_path(monkeypatch: pytest.M
 
 async def test_low_risk_filing_skips_the_retrieve_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(graph_module, "triage_node", _fake_triage_node_setting(RiskLevel.LOW))
+    monkeypatch.setattr(graph_module, "analyze_node", _fake_analyze_node)
 
     calls: list[str] = []
 
