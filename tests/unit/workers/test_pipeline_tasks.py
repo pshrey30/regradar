@@ -414,6 +414,95 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
 
     mock_db.add.assert_not_called()
     assert filing.status == FilingStatus.NEEDS_REVIEW
+    # Triage succeeded even though extraction failed — that result must not
+    # be discarded just because a separate concern (extraction) failed.
+    assert filing.domain == FilingDomain.FINANCIAL
+    assert filing.risk_level == RiskLevel.LOW
+    assert filing.classification_confidence == 0.9
+
+
+def test_process_filing_continues_when_embed_chunks_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = "filings/abc123.pdf"
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+    mock_db.add = MagicMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module, "fetch_pdf_bytes", lambda s3_key: b"fake pdf bytes"
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "extract_text_and_tables",
+        lambda pdf_bytes: ("Item 1. Real extracted filing text.", []),
+    )
+    fake_chunks = [
+        Chunk(
+            chunk_index=0,
+            chunk_text="Item 1. Real extracted filing text.",
+            section_reference="Item 1.",
+            token_count=6,
+            is_table=False,
+        )
+    ]
+    monkeypatch.setattr(
+        pipeline_tasks_module, "chunk_filing", lambda text, tables: fake_chunks
+    )
+    extraction_result = ExtractionResult(
+        obligations=[{"description": "File report.", "source_chunk_index": 0}],
+        deadlines=[{"description": "Annual report", "date": "2027-01-01"}],
+        risk_flags=["material weakness"],
+        affected_products=[],
+        key_entities=["Acme Corp"],
+        competitor_mentions=[],
+        model_used="llama3.1",
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                    "extraction": extraction_result,
+                }
+            )
+        ),
+    )
+    mock_embed_chunks = AsyncMock(side_effect=RuntimeError("embedding service down"))
+    monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
+
+    # Should not raise/propagate even though embed_chunks fails — a transient
+    # embedding failure must not crash process_filing and trigger a Celery
+    # retry that would re-run already-committed classification/extraction.
+    process_filing.run(str(filing_id))
+
+    mock_embed_chunks.assert_awaited_once()
+    # Earlier, already-committed work is unaffected by the embedding failure.
+    mock_db.add.assert_called_once()
+    added_extraction = mock_db.add.call_args[0][0]
+    assert isinstance(added_extraction, Extraction)
+    assert filing.status == FilingStatus.CLASSIFYING
+    assert filing.domain == FilingDomain.FINANCIAL
+    assert filing.risk_level == RiskLevel.LOW
+    assert filing.classification_confidence == 0.9
 
 
 def test_process_filing_calls_chunk_filing_before_graph_invoke(

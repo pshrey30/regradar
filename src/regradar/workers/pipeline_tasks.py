@@ -63,13 +63,14 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
 
         if result["domain"] is None:
             filing.status = FilingStatus.NEEDS_CLASSIFICATION
-        elif result["extraction"] is None and chunks:
-            filing.status = FilingStatus.NEEDS_REVIEW
         else:
             filing.domain = result["domain"]
             filing.risk_level = result["risk_level"]
             filing.classification_confidence = result["classification_confidence"]
-            filing.status = FilingStatus.CLASSIFYING
+            if result["extraction"] is None and chunks:
+                filing.status = FilingStatus.NEEDS_REVIEW
+            else:
+                filing.status = FilingStatus.CLASSIFYING
         await db.commit()
 
         if result["extraction"] is not None:
@@ -94,7 +95,14 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             await db.commit()
 
         if raw_text:
-            await embed_chunks(filing.id, chunks, db)
+            try:
+                await embed_chunks(filing.id, chunks, db)
+            except Exception as exc:  # noqa: BLE001 — a transient embedding failure must not
+                # re-trigger the whole task (with autoretry_for=(Exception,)) and re-run
+                # already-committed classification/extraction, which would hit the
+                # Extraction.filing_id unique constraint on retry. Embeddings are only
+                # needed for future filings' retrieval, so degrade gracefully instead.
+                logger.warning("Embedding failed for filing %s: %s", filing_id, exc)
 
 
 class _ProcessFilingTask(Task):
