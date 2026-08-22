@@ -11,6 +11,7 @@ import uuid
 from pydantic import BaseModel
 
 from regradar.models.enums import FilingDomain, RiskLevel
+from regradar.rag.chunking import Chunk
 
 
 class RetrievedChunk(BaseModel):
@@ -59,6 +60,7 @@ class PipelineState(BaseModel):
     risk_level: RiskLevel | None = None
     classification_confidence: float | None = None
     retrieved_chunks: list[RetrievedChunk] | None = None
+    chunks: list[Chunk] | None = None
     extraction: ExtractionResult | None = None
     briefs: BriefSet | None = None
     delivery_status: str | None = None

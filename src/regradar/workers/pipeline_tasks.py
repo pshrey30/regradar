@@ -17,6 +17,7 @@ from regradar.agents.graph import build_graph
 from regradar.agents.state import PipelineState
 from regradar.core.db import get_session_factory
 from regradar.models.enums import FilingStatus
+from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
 from regradar.rag.chunking import chunk_filing
 from regradar.rag.embeddings import embed_chunks
@@ -47,15 +48,17 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             return
 
         raw_text = ""
-        tables: list = []
+        chunks: list = []
         if filing.raw_pdf_s3_key:
             try:
                 pdf_bytes = fetch_pdf_bytes(filing.raw_pdf_s3_key)
                 raw_text, tables = extract_text_and_tables(pdf_bytes)
+                if raw_text:
+                    chunks = chunk_filing(raw_text, tables)
             except Exception as exc:  # noqa: BLE001 — never crash the pipeline over a bad/missing PDF
                 logger.warning("PDF extraction failed for filing %s: %s", filing_id, exc)
 
-        state = PipelineState(filing_id=filing.id, raw_text=raw_text)
+        state = PipelineState(filing_id=filing.id, raw_text=raw_text, chunks=chunks or None)
         result = await build_graph().ainvoke(state, config={"configurable": {"db": db}})
 
         if result["domain"] is None:
@@ -64,12 +67,42 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             filing.domain = result["domain"]
             filing.risk_level = result["risk_level"]
             filing.classification_confidence = result["classification_confidence"]
-            filing.status = FilingStatus.CLASSIFYING
+            if result["extraction"] is None and chunks:
+                filing.status = FilingStatus.NEEDS_REVIEW
+            else:
+                filing.status = FilingStatus.CLASSIFYING
         await db.commit()
 
+        if result["extraction"] is not None:
+            # result["extraction"] is a real ExtractionResult instance —
+            # ainvoke() does not flatten nested Pydantic sub-models into
+            # plain dicts (verified) — so this uses attribute access and
+            # model_dump(), never dict-subscript access.
+            extraction_result = result["extraction"]
+            db.add(
+                Extraction(
+                    filing_id=filing.id,
+                    obligations=extraction_result.obligations,
+                    deadlines=extraction_result.deadlines,
+                    risk_flags=extraction_result.risk_flags,
+                    affected_products=extraction_result.affected_products,
+                    key_entities=extraction_result.key_entities,
+                    competitor_mentions=extraction_result.competitor_mentions,
+                    model_used=extraction_result.model_used,
+                    raw_model_response=extraction_result.model_dump(),
+                )
+            )
+            await db.commit()
+
         if raw_text:
-            chunks = chunk_filing(raw_text, tables)
-            await embed_chunks(filing.id, chunks, db)
+            try:
+                await embed_chunks(filing.id, chunks, db)
+            except Exception as exc:  # noqa: BLE001 — a transient embedding failure must not
+                # re-trigger the whole task (with autoretry_for=(Exception,)) and re-run
+                # already-committed classification/extraction, which would hit the
+                # Extraction.filing_id unique constraint on retry. Embeddings are only
+                # needed for future filings' retrieval, so degrade gracefully instead.
+                logger.warning("Embedding failed for filing %s: %s", filing_id, exc)
 
 
 class _ProcessFilingTask(Task):
