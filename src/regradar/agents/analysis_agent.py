@@ -21,7 +21,12 @@ from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
 from regradar.agents.state import ExtractionResult, PipelineState
-from regradar.llm_routing.tiered_router import ModelChoice, build_client, other_tier_choice, select_model
+from regradar.llm_routing.tiered_router import (
+    ModelChoice,
+    build_client,
+    other_tier_choice,
+    select_model,
+)
 from regradar.models.enums import RiskLevel
 
 logger = logging.getLogger(__name__)
