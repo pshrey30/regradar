@@ -10,8 +10,12 @@ import json
 import uuid
 from unittest.mock import MagicMock, patch
 
+from openai import APIConnectionError
+
 from regradar.agents.analysis_agent import analyze_node
 from regradar.agents.state import PipelineState
+from regradar.llm_routing.tiered_router import ModelChoice
+from regradar.models.enums import RiskLevel
 from regradar.rag.chunking import Chunk
 
 VALID_EXTRACTION_JSON = {
@@ -37,6 +41,10 @@ def _mock_openai_client(content: str) -> MagicMock:
     return client
 
 
+def _fake_model_choice(model: str = "llama3.1") -> ModelChoice:
+    return ModelChoice(tier="high", model=model, base_url="http://localhost:11434/v1", api_key="ollama-local")
+
+
 def _make_state_with_chunks(chunk_count: int = 1) -> PipelineState:
     chunks = [
         Chunk(
@@ -57,7 +65,7 @@ def test_analyze_node_populates_extraction_on_valid_response() -> None:
     content = json.dumps(VALID_EXTRACTION_JSON)
     with patch(
         "regradar.agents.analysis_agent._get_llm_client",
-        return_value=(_mock_openai_client(content), "llama3.1"),
+        return_value=(_mock_openai_client(content), "llama3.1", _fake_model_choice()),
     ):
         result = analyze_node(_make_state_with_chunks())
 
@@ -79,7 +87,7 @@ def test_analyze_node_retries_once_on_malformed_json_then_succeeds() -> None:
 
     with patch(
         "regradar.agents.analysis_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = analyze_node(_make_state_with_chunks())
 
@@ -95,7 +103,7 @@ def test_analyze_node_leaves_extraction_none_after_two_malformed_responses() -> 
 
     with patch(
         "regradar.agents.analysis_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = analyze_node(_make_state_with_chunks())
 
@@ -118,7 +126,7 @@ def test_analyze_node_rejects_out_of_range_source_chunk_index_and_retries() -> N
 
     with patch(
         "regradar.agents.analysis_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         # Only 1 chunk exists (index 0) in _make_state_with_chunks(1); index 99 is invalid.
         result = analyze_node(_make_state_with_chunks(chunk_count=1))
@@ -142,7 +150,7 @@ def test_analyze_node_leaves_extraction_none_on_wrong_typed_field_without_crashi
 
     with patch(
         "regradar.agents.analysis_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = analyze_node(_make_state_with_chunks())
 
@@ -158,3 +166,84 @@ def test_analyze_node_with_no_chunks_leaves_extraction_none() -> None:
 
     assert result.extraction is None
     mock_get_client.assert_not_called()
+
+
+def test_analyze_node_passes_state_risk_level_to_get_llm_client() -> None:
+    content = json.dumps(VALID_EXTRACTION_JSON)
+    state = _make_state_with_chunks()
+    state = state.model_copy(update={"risk_level": RiskLevel.CRITICAL})
+
+    with patch(
+        "regradar.agents.analysis_agent._get_llm_client",
+        return_value=(_mock_openai_client(content), "llama3.1", _fake_model_choice()),
+    ) as mock_get_client:
+        analyze_node(state)
+
+    mock_get_client.assert_called_once_with(RiskLevel.CRITICAL)
+
+
+def test_analyze_node_falls_back_to_other_tier_on_connection_error() -> None:
+    content = json.dumps(VALID_EXTRACTION_JSON)
+    primary_client = MagicMock()
+    primary_client.chat.completions.create.side_effect = APIConnectionError(
+        request=MagicMock()
+    )
+    fallback_client = _mock_openai_client(content)
+
+    primary_choice = ModelChoice(
+        tier="high", model="llama3.1", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+    fallback_choice = ModelChoice(
+        tier="low", model="llama3.2:1b", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+
+    with (
+        patch(
+            "regradar.agents.analysis_agent._get_llm_client",
+            return_value=(primary_client, "llama3.1", primary_choice),
+        ),
+        patch(
+            "regradar.agents.analysis_agent.other_tier_choice",
+            return_value=fallback_choice,
+        ),
+        patch(
+            "regradar.agents.analysis_agent.build_client",
+            return_value=fallback_client,
+        ),
+    ):
+        result = analyze_node(_make_state_with_chunks())
+
+    assert result.extraction is not None
+    assert result.extraction.model_used == "llama3.2:1b"
+
+
+def test_analyze_node_gives_up_after_fallback_also_fails() -> None:
+    primary_client = MagicMock()
+    primary_client.chat.completions.create.side_effect = APIConnectionError(request=MagicMock())
+    fallback_client = MagicMock()
+    fallback_client.chat.completions.create.side_effect = APIConnectionError(request=MagicMock())
+
+    primary_choice = ModelChoice(
+        tier="high", model="llama3.1", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+    fallback_choice = ModelChoice(
+        tier="low", model="llama3.2:1b", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+
+    with (
+        patch(
+            "regradar.agents.analysis_agent._get_llm_client",
+            return_value=(primary_client, "llama3.1", primary_choice),
+        ),
+        patch(
+            "regradar.agents.analysis_agent.other_tier_choice",
+            return_value=fallback_choice,
+        ),
+        patch(
+            "regradar.agents.analysis_agent.build_client",
+            return_value=fallback_client,
+        ),
+    ):
+        result = analyze_node(_make_state_with_chunks())
+
+    assert result.extraction is None
