@@ -655,6 +655,105 @@ def test_process_filing_continues_when_embed_chunks_raises(
     assert filing.classification_confidence == 0.9
 
 
+def test_process_filing_continues_when_brief_commit_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = "filings/abc123.pdf"
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    # The first commit (filing status) and second commit (Extraction) succeed;
+    # the third commit (Brief) raises — isolating the failure to Brief
+    # persistence specifically, mirroring the embed_chunks-failure test above.
+    mock_db.commit = AsyncMock(side_effect=[None, None, RuntimeError("db write failed")])
+    mock_db.add = MagicMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module, "fetch_pdf_bytes", lambda s3_key: b"fake pdf bytes"
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "extract_text_and_tables",
+        lambda pdf_bytes: ("Item 1. Real extracted filing text.", []),
+    )
+    fake_chunks = [
+        Chunk(
+            chunk_index=0,
+            chunk_text="Item 1. Real extracted filing text.",
+            section_reference="Item 1.",
+            token_count=6,
+            is_table=False,
+        )
+    ]
+    monkeypatch.setattr(
+        pipeline_tasks_module, "chunk_filing", lambda text, tables: fake_chunks
+    )
+    extraction_result = ExtractionResult(
+        obligations=[{"description": "File report.", "source_chunk_index": 0}],
+        deadlines=[{"description": "Annual report", "date": "2027-01-01"}],
+        risk_flags=["material weakness"],
+        affected_products=[],
+        key_entities=["Acme Corp"],
+        competitor_mentions=[],
+        model_used="llama3.1",
+    )
+    briefs_result = BriefSet(
+        executive_brief="Sentence one. Sentence two. Sentence three.",
+        cco_summary="Short board-level summary.",
+        analyst_summary="- File report by 2027-01-01",
+        engineer_summary=f"filing_id={filing_id} domain=financial risk_level=low obligations_extracted=1 status=processed",
+        model_used="llama3.1",
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                    "extraction": extraction_result,
+                    "briefs": briefs_result,
+                }
+            )
+        ),
+    )
+    mock_embed_chunks = AsyncMock(return_value=None)
+    monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
+
+    # Should not raise/propagate even though the Brief commit fails — a
+    # transient Brief-insert failure must not crash process_filing and
+    # trigger a Celery retry that would re-run already-committed
+    # classification/extraction and hit Extraction's unique constraint.
+    process_filing.run(str(filing_id))
+
+    # Earlier, already-committed work (status + Extraction) is unaffected.
+    assert mock_db.add.call_count == 2
+    added_extraction = mock_db.add.call_args_list[0].args[0]
+    assert isinstance(added_extraction, Extraction)
+    added_brief = mock_db.add.call_args_list[1].args[0]
+    assert isinstance(added_brief, Brief)
+    assert filing.status == FilingStatus.CLASSIFYING
+    assert filing.domain == FilingDomain.FINANCIAL
+    assert filing.risk_level == RiskLevel.LOW
+    assert filing.classification_confidence == 0.9
+    # Processing continued past the Brief failure to embed_chunks.
+    mock_embed_chunks.assert_awaited_once()
+
+
 def test_process_filing_calls_chunk_filing_before_graph_invoke(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

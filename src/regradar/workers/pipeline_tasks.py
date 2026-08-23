@@ -102,17 +102,24 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             # ainvoke() nested-Pydantic-model behavior verified for
             # ExtractionResult in AGENT-07 — attribute access only.
             briefs_result = result["briefs"]
-            db.add(
-                Brief(
-                    filing_id=filing.id,
-                    executive_brief=briefs_result.executive_brief,
-                    cco_summary=briefs_result.cco_summary,
-                    analyst_summary=briefs_result.analyst_summary,
-                    engineer_summary=briefs_result.engineer_summary,
-                    model_used=briefs_result.model_used,
+            try:
+                db.add(
+                    Brief(
+                        filing_id=filing.id,
+                        executive_brief=briefs_result.executive_brief,
+                        cco_summary=briefs_result.cco_summary,
+                        analyst_summary=briefs_result.analyst_summary,
+                        engineer_summary=briefs_result.engineer_summary,
+                        model_used=briefs_result.model_used,
+                    )
                 )
-            )
-            await db.commit()
+                await db.commit()
+            except Exception as exc:  # noqa: BLE001 — a transient Brief-insert failure must
+                # not re-trigger the whole task (with autoretry_for=(Exception,)) and re-run
+                # already-committed classification/extraction, which would hit the
+                # Extraction.filing_id unique constraint on retry. Degrade gracefully instead —
+                # filing.status was already set/committed above this block, so it's untouched.
+                logger.warning("Brief persistence failed for filing %s: %s", filing_id, exc)
 
         if raw_text:
             try:

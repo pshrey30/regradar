@@ -21,6 +21,7 @@ content to summarize.
 import json
 import logging
 import re
+from typing import cast
 
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -112,7 +113,7 @@ def _call_summarization_model(
         "type": "json_schema",
         "json_schema": {
             "name": "summarization",
-            "schema": SUMMARIZATION_SCHEMA,
+            "schema": cast(dict[str, object], SUMMARIZATION_SCHEMA),
             "strict": True,
         },
     }
@@ -126,8 +127,31 @@ def _call_summarization_model(
     return json.loads(content)
 
 
+_ABBREVIATIONS = (
+    "U.S.", "Mr.", "Mrs.", "Dr.", "Inc.", "Corp.", "Jan.", "Feb.", "Mar.",
+    "Apr.", "Jun.", "Jul.", "Aug.", "Sep.", "Sept.", "Oct.", "Nov.", "Dec.",
+    "Sec.", "No.", "vs.", "etc.",
+)
+_ABBREVIATION_PLACEHOLDER = "․"
+
+
 def _count_sentences(text: str) -> int:
-    return len([s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s])
+    """Count sentences, without mis-splitting on abbreviation periods.
+
+    Regulatory filing prose is full of abbreviations (U.S., Corp., Jan.,
+    Sec., No., ...) whose trailing period is not a sentence boundary even
+    when followed by whitespace and an uppercase letter (e.g. "Jan. 15" or
+    "Sec. 404"). Abbreviation periods are swapped for a placeholder
+    character (that is not one of `.!?`) before splitting on
+    sentence-ending punctuation, so only genuine sentence boundaries get
+    split on; the placeholder never needs restoring since only the count
+    of the split, not the text itself, is returned.
+    """
+    protected = text
+    for abbr in _ABBREVIATIONS:
+        protected = protected.replace(abbr, abbr.replace(".", _ABBREVIATION_PLACEHOLDER))
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", protected.strip()) if s]
+    return len(sentences)
 
 
 def _validate_summarization(parsed: dict) -> None:

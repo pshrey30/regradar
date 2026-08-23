@@ -173,6 +173,32 @@ def test_summarize_node_leaves_briefs_none_on_wrong_typed_field_without_crashing
     assert client.chat.completions.create.call_count == 2
 
 
+def test_summarize_node_accepts_executive_brief_with_abbreviation_periods() -> None:
+    """A genuinely 3-sentence executive_brief containing common regulatory-prose
+    abbreviations (U.S., Corp., Jan., Sec.) must not be mis-counted as more than
+    3 sentences and wrongly rejected/retried."""
+    abbreviation_json = dict(VALID_SUMMARIZATION_JSON)
+    abbreviation_json["executive_brief"] = (
+        "The U.S. Securities and Exchange Commission issued a notice. Acme Corp. "
+        "must remediate a material weakness by Jan. 15, 2027. The filing affects "
+        "Sec. 404 controls."
+    )
+    content = json.dumps(abbreviation_json)
+    client = _mock_openai_client(content)
+
+    with patch(
+        "regradar.agents.summarization_agent._get_llm_client",
+        return_value=(client, "llama3.1"),
+    ):
+        result = summarize_node(_make_state_with_extraction())
+
+    assert result.briefs is not None
+    assert result.briefs.executive_brief == abbreviation_json["executive_brief"]
+    # No retry was needed — the abbreviation periods must not have inflated
+    # the sentence count past the valid 3-5 range.
+    assert client.chat.completions.create.call_count == 1
+
+
 def test_summarize_node_with_no_extraction_leaves_briefs_none() -> None:
     state = PipelineState(filing_id=uuid.uuid4(), raw_text="", extraction=None)
 
