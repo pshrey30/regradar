@@ -23,12 +23,18 @@ import logging
 import re
 from typing import cast
 
-from openai import OpenAI
+from openai import APIConnectionError, OpenAI, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
 from regradar.agents.state import BriefSet, PipelineState
-from regradar.core.config import get_settings
+from regradar.llm_routing.tiered_router import (
+    ModelChoice,
+    build_client,
+    other_tier_choice,
+    select_model,
+)
+from regradar.models.enums import RiskLevel
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +77,9 @@ class SummarizationError(Exception):
     caught by summarize_node, never propagates out of it."""
 
 
-def _get_llm_client() -> tuple[OpenAI, str]:
-    settings = get_settings()
-    if settings.use_local_llm:
-        return (
-            OpenAI(base_url=settings.local_llm_base_url, api_key="ollama-local"),
-            settings.local_llm_model,
-        )
-    return OpenAI(api_key=settings.openai_api_key.get_secret_value()), settings.tier_high_model
+def _get_llm_client(risk_level: RiskLevel | None) -> tuple[OpenAI, str, ModelChoice]:
+    choice = select_model(risk_level, task="summarization")
+    return build_client(choice), choice.model, choice
 
 
 def _build_summarization_prompt(state: PipelineState) -> str:
@@ -213,10 +214,11 @@ def summarize_node(state: PipelineState) -> PipelineState:
         return state
 
     prompt = _build_summarization_prompt(state)
-    client, model_name = _get_llm_client()
+    client, model_name, choice = _get_llm_client(state.risk_level)
 
     last_error: Exception | None = None
     retry_issue: str | None = None
+    used_fallback = False
     for attempt in range(MAX_ATTEMPTS):
         try:
             parsed = _call_summarization_model(client, model_name, prompt, retry_issue)
@@ -229,6 +231,23 @@ def summarize_node(state: PipelineState) -> PipelineState:
                 model_used=model_name,
             )
             return state.model_copy(update={"briefs": briefs})
+        except (APIConnectionError, RateLimitError) as exc:
+            last_error = exc
+            if used_fallback:
+                logger.error(
+                    "Fallback tier also unavailable for filing %s: %s", state.filing_id, exc
+                )
+                break
+            logger.warning(
+                "Primary tier %r unavailable for filing %s (%s); falling back to the other tier",
+                choice.tier,
+                state.filing_id,
+                exc,
+            )
+            choice = other_tier_choice(choice, task="summarization")
+            client = build_client(choice)
+            model_name = choice.model
+            used_fallback = True
         except (json.JSONDecodeError, SummarizationError) as exc:
             last_error = exc
             retry_issue = str(exc)

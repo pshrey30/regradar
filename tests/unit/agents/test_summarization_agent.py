@@ -8,8 +8,11 @@ import json
 import uuid
 from unittest.mock import MagicMock, patch
 
+from openai import APIConnectionError
+
 from regradar.agents.state import ExtractionResult, PipelineState
 from regradar.agents.summarization_agent import summarize_node
+from regradar.llm_routing.tiered_router import ModelChoice
 from regradar.models.enums import FilingDomain, RiskLevel
 
 VALID_SUMMARIZATION_JSON = {
@@ -32,6 +35,10 @@ def _mock_openai_client(content: str) -> MagicMock:
     response.choices = [MagicMock(message=MagicMock(content=content))]
     client.chat.completions.create.return_value = response
     return client
+
+
+def _fake_model_choice(model: str = "llama3.1") -> ModelChoice:
+    return ModelChoice(tier="high", model=model, base_url="http://localhost:11434/v1", api_key="ollama-local")
 
 
 def _make_state_with_extraction(obligation_count: int = 1) -> PipelineState:
@@ -62,7 +69,7 @@ def test_summarize_node_populates_briefs_on_valid_response() -> None:
 
     with patch(
         "regradar.agents.summarization_agent._get_llm_client",
-        return_value=(_mock_openai_client(content), "llama3.1"),
+        return_value=(_mock_openai_client(content), "llama3.1", _fake_model_choice()),
     ):
         result = summarize_node(state)
 
@@ -89,7 +96,7 @@ def test_summarize_node_retries_once_on_malformed_json_then_succeeds() -> None:
 
     with patch(
         "regradar.agents.summarization_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = summarize_node(_make_state_with_extraction())
 
@@ -105,7 +112,7 @@ def test_summarize_node_leaves_briefs_none_after_two_malformed_responses() -> No
 
     with patch(
         "regradar.agents.summarization_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = summarize_node(_make_state_with_extraction())
 
@@ -126,7 +133,7 @@ def test_summarize_node_retries_when_executive_brief_sentence_count_out_of_range
 
     with patch(
         "regradar.agents.summarization_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = summarize_node(_make_state_with_extraction())
 
@@ -147,7 +154,7 @@ def test_summarize_node_retries_when_cco_summary_exceeds_fifty_words() -> None:
 
     with patch(
         "regradar.agents.summarization_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = summarize_node(_make_state_with_extraction())
 
@@ -165,7 +172,7 @@ def test_summarize_node_leaves_briefs_none_on_wrong_typed_field_without_crashing
 
     with patch(
         "regradar.agents.summarization_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = summarize_node(_make_state_with_extraction())
 
@@ -188,7 +195,7 @@ def test_summarize_node_accepts_executive_brief_with_abbreviation_periods() -> N
 
     with patch(
         "regradar.agents.summarization_agent._get_llm_client",
-        return_value=(client, "llama3.1"),
+        return_value=(client, "llama3.1", _fake_model_choice()),
     ):
         result = summarize_node(_make_state_with_extraction())
 
@@ -207,3 +214,81 @@ def test_summarize_node_with_no_extraction_leaves_briefs_none() -> None:
 
     assert result.briefs is None
     mock_get_client.assert_not_called()
+
+
+def test_summarize_node_passes_state_risk_level_to_get_llm_client() -> None:
+    content = json.dumps(VALID_SUMMARIZATION_JSON)
+    state = _make_state_with_extraction()
+
+    with patch(
+        "regradar.agents.summarization_agent._get_llm_client",
+        return_value=(_mock_openai_client(content), "llama3.1", _fake_model_choice()),
+    ) as mock_get_client:
+        summarize_node(state)
+
+    mock_get_client.assert_called_once_with(state.risk_level)
+
+
+def test_summarize_node_falls_back_to_other_tier_on_connection_error() -> None:
+    content = json.dumps(VALID_SUMMARIZATION_JSON)
+    primary_client = MagicMock()
+    primary_client.chat.completions.create.side_effect = APIConnectionError(request=MagicMock())
+    fallback_client = _mock_openai_client(content)
+
+    primary_choice = ModelChoice(
+        tier="high", model="llama3.1", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+    fallback_choice = ModelChoice(
+        tier="low", model="llama3.2:1b", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+
+    with (
+        patch(
+            "regradar.agents.summarization_agent._get_llm_client",
+            return_value=(primary_client, "llama3.1", primary_choice),
+        ),
+        patch(
+            "regradar.agents.summarization_agent.other_tier_choice",
+            return_value=fallback_choice,
+        ),
+        patch(
+            "regradar.agents.summarization_agent.build_client",
+            return_value=fallback_client,
+        ),
+    ):
+        result = summarize_node(_make_state_with_extraction())
+
+    assert result.briefs is not None
+    assert result.briefs.model_used == "llama3.2:1b"
+
+
+def test_summarize_node_gives_up_after_fallback_also_fails() -> None:
+    primary_client = MagicMock()
+    primary_client.chat.completions.create.side_effect = APIConnectionError(request=MagicMock())
+    fallback_client = MagicMock()
+    fallback_client.chat.completions.create.side_effect = APIConnectionError(request=MagicMock())
+
+    primary_choice = ModelChoice(
+        tier="high", model="llama3.1", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+    fallback_choice = ModelChoice(
+        tier="low", model="llama3.2:1b", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+
+    with (
+        patch(
+            "regradar.agents.summarization_agent._get_llm_client",
+            return_value=(primary_client, "llama3.1", primary_choice),
+        ),
+        patch(
+            "regradar.agents.summarization_agent.other_tier_choice",
+            return_value=fallback_choice,
+        ),
+        patch(
+            "regradar.agents.summarization_agent.build_client",
+            return_value=fallback_client,
+        ),
+    ):
+        result = summarize_node(_make_state_with_extraction())
+
+    assert result.briefs is None
