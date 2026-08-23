@@ -24,7 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from regradar.agents.state import ExtractionResult
+from regradar.agents.state import BriefSet, ExtractionResult
+from regradar.models.brief import Brief
 from regradar.models.enums import FilingDomain, FilingStatus, RiskLevel
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
@@ -75,6 +76,7 @@ def test_process_filing_persists_classification_on_success(
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
                     "extraction": None,
+                    "briefs": None,
                 }
             )
         ),
@@ -121,6 +123,7 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
                     "risk_level": None,
                     "classification_confidence": None,
                     "extraction": None,
+                    "briefs": None,
                 }
             )
         ),
@@ -163,6 +166,7 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
                     "extraction": None,
+                    "briefs": None,
                 }
             )
         ),
@@ -226,6 +230,7 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
             "risk_level": RiskLevel.LOW,
             "classification_confidence": 0.9,
             "extraction": None,
+            "briefs": None,
         }
 
     monkeypatch.setattr(
@@ -276,6 +281,7 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
                     "extraction": None,
+                    "briefs": None,
                 }
             )
         ),
@@ -325,6 +331,13 @@ def test_process_filing_persists_extraction_on_success(
         competitor_mentions=[],
         model_used="llama3.1",
     )
+    briefs_result = BriefSet(
+        executive_brief="Sentence one. Sentence two. Sentence three.",
+        cco_summary="Short board-level summary.",
+        analyst_summary="- File report by 2027-01-01",
+        engineer_summary=f"filing_id={filing_id} domain=financial risk_level=low obligations_extracted=1 status=processed",
+        model_used="llama3.1",
+    )
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
@@ -335,6 +348,7 @@ def test_process_filing_persists_extraction_on_success(
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
                     "extraction": extraction_result,
+                    "briefs": briefs_result,
                 }
             )
         ),
@@ -342,8 +356,8 @@ def test_process_filing_persists_extraction_on_success(
 
     process_filing.run(str(filing_id))
 
-    mock_db.add.assert_called_once()
-    added_extraction = mock_db.add.call_args[0][0]
+    assert mock_db.add.call_count == 2
+    added_extraction = mock_db.add.call_args_list[0].args[0]
     assert isinstance(added_extraction, Extraction)
     assert added_extraction.filing_id == filing_id
     assert added_extraction.obligations == extraction_result.obligations
@@ -403,6 +417,7 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
                     "extraction": None,
+                    "briefs": None,
                 }
             )
         ),
@@ -419,6 +434,133 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
     assert filing.domain == FilingDomain.FINANCIAL
     assert filing.risk_level == RiskLevel.LOW
     assert filing.classification_confidence == 0.9
+
+
+def test_process_filing_persists_briefs_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+    mock_db.add = MagicMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    extraction_result = ExtractionResult(
+        obligations=[{"description": "File report.", "source_chunk_index": 0}],
+        deadlines=[{"description": "Annual report", "date": "2027-01-01"}],
+        risk_flags=["material weakness"],
+        affected_products=[],
+        key_entities=["Acme Corp"],
+        competitor_mentions=[],
+        model_used="llama3.1",
+    )
+    briefs_result = BriefSet(
+        executive_brief="Sentence one. Sentence two. Sentence three.",
+        cco_summary="Short board-level summary.",
+        analyst_summary="- File report by 2027-01-01",
+        engineer_summary=f"filing_id={filing_id} domain=financial risk_level=low obligations_extracted=1 status=processed",
+        model_used="llama3.1",
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                    "extraction": extraction_result,
+                    "briefs": briefs_result,
+                }
+            )
+        ),
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert mock_db.add.call_count == 2
+    added_objects = [call.args[0] for call in mock_db.add.call_args_list]
+    assert isinstance(added_objects[0], Extraction)
+    added_brief = added_objects[1]
+    assert isinstance(added_brief, Brief)
+    assert added_brief.filing_id == filing_id
+    assert added_brief.executive_brief == briefs_result.executive_brief
+    assert added_brief.cco_summary == briefs_result.cco_summary
+    assert added_brief.analyst_summary == briefs_result.analyst_summary
+    assert added_brief.engineer_summary == briefs_result.engineer_summary
+    assert added_brief.model_used == "llama3.1"
+    assert filing.status == FilingStatus.CLASSIFYING
+
+
+def test_process_filing_marks_needs_review_when_summarization_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+    mock_db.add = MagicMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    extraction_result = ExtractionResult(
+        obligations=[{"description": "File report.", "source_chunk_index": 0}],
+        deadlines=[{"description": "Annual report", "date": "2027-01-01"}],
+        risk_flags=["material weakness"],
+        affected_products=[],
+        key_entities=["Acme Corp"],
+        competitor_mentions=[],
+        model_used="llama3.1",
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                    "extraction": extraction_result,
+                    "briefs": None,
+                }
+            )
+        ),
+    )
+
+    process_filing.run(str(filing_id))
+
+    # Extraction still gets persisted even though summarization failed —
+    # that successful result must not be discarded.
+    assert mock_db.add.call_count == 1
+    added_extraction = mock_db.add.call_args[0][0]
+    assert isinstance(added_extraction, Extraction)
+    assert filing.status == FilingStatus.NEEDS_REVIEW
 
 
 def test_process_filing_continues_when_embed_chunks_raises(
@@ -472,6 +614,13 @@ def test_process_filing_continues_when_embed_chunks_raises(
         competitor_mentions=[],
         model_used="llama3.1",
     )
+    briefs_result = BriefSet(
+        executive_brief="Sentence one. Sentence two. Sentence three.",
+        cco_summary="Short board-level summary.",
+        analyst_summary="- File report by 2027-01-01",
+        engineer_summary=f"filing_id={filing_id} domain=financial risk_level=low obligations_extracted=1 status=processed",
+        model_used="llama3.1",
+    )
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
@@ -482,6 +631,7 @@ def test_process_filing_continues_when_embed_chunks_raises(
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
                     "extraction": extraction_result,
+                    "briefs": briefs_result,
                 }
             )
         ),
@@ -496,8 +646,8 @@ def test_process_filing_continues_when_embed_chunks_raises(
 
     mock_embed_chunks.assert_awaited_once()
     # Earlier, already-committed work is unaffected by the embedding failure.
-    mock_db.add.assert_called_once()
-    added_extraction = mock_db.add.call_args[0][0]
+    assert mock_db.add.call_count == 2
+    added_extraction = mock_db.add.call_args_list[0].args[0]
     assert isinstance(added_extraction, Extraction)
     assert filing.status == FilingStatus.CLASSIFYING
     assert filing.domain == FilingDomain.FINANCIAL
@@ -561,6 +711,7 @@ def test_process_filing_calls_chunk_filing_before_graph_invoke(
             "risk_level": RiskLevel.LOW,
             "classification_confidence": 0.9,
             "extraction": None,
+            "briefs": None,
         }
 
     monkeypatch.setattr(pipeline_tasks_module, "chunk_filing", _fake_chunk_filing)

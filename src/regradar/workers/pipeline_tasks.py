@@ -16,6 +16,7 @@ from celery.utils.log import get_task_logger
 from regradar.agents.graph import build_graph
 from regradar.agents.state import PipelineState
 from regradar.core.db import get_session_factory
+from regradar.models.brief import Brief
 from regradar.models.enums import FilingStatus
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
@@ -67,7 +68,9 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             filing.domain = result["domain"]
             filing.risk_level = result["risk_level"]
             filing.classification_confidence = result["classification_confidence"]
-            if result["extraction"] is None and chunks:
+            extraction_missing = result["extraction"] is None and chunks
+            briefs_missing = result["extraction"] is not None and result["briefs"] is None
+            if extraction_missing or briefs_missing:
                 filing.status = FilingStatus.NEEDS_REVIEW
             else:
                 filing.status = FilingStatus.CLASSIFYING
@@ -90,6 +93,23 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
                     competitor_mentions=extraction_result.competitor_mentions,
                     model_used=extraction_result.model_used,
                     raw_model_response=extraction_result.model_dump(),
+                )
+            )
+            await db.commit()
+
+        if result["briefs"] is not None:
+            # result["briefs"] is a real BriefSet instance — same
+            # ainvoke() nested-Pydantic-model behavior verified for
+            # ExtractionResult in AGENT-07 — attribute access only.
+            briefs_result = result["briefs"]
+            db.add(
+                Brief(
+                    filing_id=filing.id,
+                    executive_brief=briefs_result.executive_brief,
+                    cco_summary=briefs_result.cco_summary,
+                    analyst_summary=briefs_result.analyst_summary,
+                    engineer_summary=briefs_result.engineer_summary,
+                    model_used=briefs_result.model_used,
                 )
             )
             await db.commit()
