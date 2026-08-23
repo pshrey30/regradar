@@ -16,7 +16,7 @@ import json
 import logging
 from typing import cast
 
-from openai import APIConnectionError, OpenAI, RateLimitError
+from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
@@ -194,7 +194,9 @@ def analyze_node(state: PipelineState) -> PipelineState:
 
     last_error: Exception | None = None
     used_fallback = False
-    for attempt in range(MAX_ATTEMPTS):
+    attempt = 0
+    max_attempts_this_run = MAX_ATTEMPTS
+    while attempt < max_attempts_this_run:
         try:
             parsed = _call_extraction_model(client, model_name, prompt, strict_retry=attempt > 0)
             _validate_extraction(parsed, len(state.chunks))
@@ -208,7 +210,7 @@ def analyze_node(state: PipelineState) -> PipelineState:
                 model_used=model_name,
             )
             return state.model_copy(update={"extraction": extraction})
-        except (APIConnectionError, RateLimitError) as exc:
+        except (APIConnectionError, RateLimitError, InternalServerError) as exc:
             last_error = exc
             if used_fallback:
                 logger.error(
@@ -225,6 +227,7 @@ def analyze_node(state: PipelineState) -> PipelineState:
             client = build_client(choice)
             model_name = choice.model
             used_fallback = True
+            max_attempts_this_run += 1
         except (json.JSONDecodeError, AnalysisError) as exc:
             last_error = exc
             logger.warning(
@@ -233,11 +236,12 @@ def analyze_node(state: PipelineState) -> PipelineState:
                 state.filing_id,
                 exc,
             )
+        attempt += 1
 
     logger.error(
         "Extraction failed for filing %s after %d attempts: %s",
         state.filing_id,
-        MAX_ATTEMPTS,
+        attempt,
         last_error,
     )
     return state

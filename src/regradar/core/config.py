@@ -11,6 +11,8 @@ from functools import lru_cache
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from regradar.models.enums import RiskLevel
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -49,7 +51,9 @@ class Settings(BaseSettings):
     # ── Model routing tier thresholds ───────────────────────
     tier_high_model: str = Field(default="gpt-4o", alias="TIER_HIGH_MODEL")
     tier_low_model: str = Field(default="granite-13b", alias="TIER_LOW_MODEL")
-    tier_routing_risk_threshold: str = Field(default="high", alias="TIER_ROUTING_RISK_THRESHOLD")
+    tier_routing_risk_threshold: RiskLevel = Field(
+        default=RiskLevel.HIGH, alias="TIER_ROUTING_RISK_THRESHOLD"
+    )
     classification_confidence_threshold: float = Field(
         default=0.75, alias="CLASSIFICATION_CONFIDENCE_THRESHOLD"
     )

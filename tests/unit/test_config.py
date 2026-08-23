@@ -59,6 +59,18 @@ def test_sec_edgar_user_agent_requires_contact_email(monkeypatch: pytest.MonkeyP
         Settings(_env_file=None)  # type: ignore[call-arg]
 
 
+def test_invalid_tier_routing_risk_threshold_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An invalid TIER_ROUTING_RISK_THRESHOLD must be rejected at
+    Settings-construction time (process startup), not deep inside
+    tiered_router._tier_for_risk on the first filing processed."""
+    for key, value in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("TIER_ROUTING_RISK_THRESHOLD", "nonsense")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
 def test_secrets_never_appear_in_repr_or_str(monkeypatch: pytest.MonkeyPatch) -> None:
     for key, value in REQUIRED_ENV.items():
         monkeypatch.setenv(key, value)

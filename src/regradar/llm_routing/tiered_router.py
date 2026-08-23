@@ -18,7 +18,7 @@ local-mode path and mocked unit tests exercise this code.
 from typing import Literal
 
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from regradar.core.config import get_settings
 from regradar.models.enums import RiskLevel
@@ -48,7 +48,7 @@ class ModelChoice(BaseModel):
     tier: Tier
     model: str
     base_url: str | None = None
-    api_key: str
+    api_key: SecretStr
 
 
 def _tier_for_risk(risk_level: RiskLevel | None) -> Tier:
@@ -57,7 +57,7 @@ def _tier_for_risk(risk_level: RiskLevel | None) -> Tier:
     filing the same as any non-low risk rather than defaulting to the
     cheaper path for a filing we haven't actually assessed yet."""
     settings = get_settings()
-    threshold = RiskLevel(settings.tier_routing_risk_threshold)
+    threshold = settings.tier_routing_risk_threshold
     effective_risk = risk_level or RiskLevel.HIGH
     return "high" if _RISK_ORDER[effective_risk] >= _RISK_ORDER[threshold] else "low"
 
@@ -68,20 +68,23 @@ def select_model_for_tier(tier: Tier, task: Task) -> ModelChoice:
     if settings.use_local_llm:
         model = settings.local_llm_model if tier == "high" else settings.local_llm_low_model
         return ModelChoice(
-            tier=tier, model=model, base_url=settings.local_llm_base_url, api_key="ollama-local"
+            tier=tier,
+            model=model,
+            base_url=settings.local_llm_base_url,
+            api_key=SecretStr("ollama-local"),
         )
     if tier == "high":
         return ModelChoice(
             tier="high",
             model=settings.tier_high_model,
             base_url=None,
-            api_key=settings.openai_api_key.get_secret_value(),
+            api_key=settings.openai_api_key,
         )
     return ModelChoice(
         tier="low",
         model=settings.tier_low_model,
         base_url="https://router.huggingface.co/v1",
-        api_key=settings.huggingface_api_token.get_secret_value(),
+        api_key=settings.huggingface_api_token,
     )
 
 
@@ -98,4 +101,4 @@ def other_tier_choice(choice: ModelChoice, task: Task) -> ModelChoice:
 
 
 def build_client(choice: ModelChoice) -> OpenAI:
-    return OpenAI(base_url=choice.base_url, api_key=choice.api_key)
+    return OpenAI(base_url=choice.base_url, api_key=choice.api_key.get_secret_value())

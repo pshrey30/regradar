@@ -23,7 +23,7 @@ import logging
 import re
 from typing import cast
 
-from openai import APIConnectionError, OpenAI, RateLimitError
+from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
@@ -219,7 +219,9 @@ def summarize_node(state: PipelineState) -> PipelineState:
     last_error: Exception | None = None
     retry_issue: str | None = None
     used_fallback = False
-    for attempt in range(MAX_ATTEMPTS):
+    attempt = 0
+    max_attempts_this_run = MAX_ATTEMPTS
+    while attempt < max_attempts_this_run:
         try:
             parsed = _call_summarization_model(client, model_name, prompt, retry_issue)
             _validate_summarization(parsed)
@@ -231,7 +233,7 @@ def summarize_node(state: PipelineState) -> PipelineState:
                 model_used=model_name,
             )
             return state.model_copy(update={"briefs": briefs})
-        except (APIConnectionError, RateLimitError) as exc:
+        except (APIConnectionError, RateLimitError, InternalServerError) as exc:
             last_error = exc
             if used_fallback:
                 logger.error(
@@ -248,6 +250,7 @@ def summarize_node(state: PipelineState) -> PipelineState:
             client = build_client(choice)
             model_name = choice.model
             used_fallback = True
+            max_attempts_this_run += 1
         except (json.JSONDecodeError, SummarizationError) as exc:
             last_error = exc
             retry_issue = str(exc)
@@ -257,11 +260,12 @@ def summarize_node(state: PipelineState) -> PipelineState:
                 state.filing_id,
                 exc,
             )
+        attempt += 1
 
     logger.error(
         "Summarization failed for filing %s after %d attempts: %s",
         state.filing_id,
-        MAX_ATTEMPTS,
+        attempt,
         last_error,
     )
     return state

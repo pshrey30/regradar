@@ -13,8 +13,6 @@ os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 os.environ.setdefault("HUGGINGFACE_API_TOKEN", "test-hf-token")
 os.environ.setdefault("SEC_EDGAR_USER_AGENT", "RegRadar/1.0 (test@example.com)")
 
-from unittest.mock import patch
-
 import pytest
 from openai import OpenAI
 
@@ -82,7 +80,7 @@ def test_select_model_for_tier_local_mode_uses_local_models(
     high_choice = select_model_for_tier("high", task="analysis")
     assert high_choice.model == "llama3.1"
     assert high_choice.base_url == "http://localhost:11434/v1"
-    assert high_choice.api_key == "ollama-local"
+    assert high_choice.api_key.get_secret_value() == "ollama-local"
 
     low_choice = select_model_for_tier("low", task="analysis")
     assert low_choice.model == "llama3.2:1b"
@@ -101,12 +99,12 @@ def test_select_model_for_tier_real_mode_uses_openai_and_hf(
     high_choice = select_model_for_tier("high", task="analysis")
     assert high_choice.model == "gpt-4o"
     assert high_choice.base_url is None
-    assert high_choice.api_key == "sk-test-openai"
+    assert high_choice.api_key.get_secret_value() == "sk-test-openai"
 
     low_choice = select_model_for_tier("low", task="analysis")
     assert low_choice.model == "granite-13b"
     assert low_choice.base_url == "https://router.huggingface.co/v1"
-    assert low_choice.api_key == "hf-test-token"
+    assert low_choice.api_key.get_secret_value() == "hf-test-token"
 
 
 def test_other_tier_choice_inverts_tier(monkeypatch: pytest.MonkeyPatch) -> None:

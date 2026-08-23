@@ -10,7 +10,8 @@ import json
 import uuid
 from unittest.mock import MagicMock, patch
 
-from openai import APIConnectionError
+import httpx
+from openai import APIConnectionError, InternalServerError
 
 from regradar.agents.analysis_agent import analyze_node
 from regradar.agents.state import PipelineState
@@ -215,6 +216,97 @@ def test_analyze_node_falls_back_to_other_tier_on_connection_error() -> None:
 
     assert result.extraction is not None
     assert result.extraction.model_used == "llama3.2:1b"
+
+
+def _make_internal_server_error() -> InternalServerError:
+    request = httpx.Request("POST", "http://test")
+    response = httpx.Response(500, request=request)
+    return InternalServerError(message="internal server error", response=response, body=None)
+
+
+def test_analyze_node_falls_back_to_other_tier_on_internal_server_error() -> None:
+    """A 5xx InternalServerError from the primary tier's provider is also a
+    'provider unavailable' signal and must trigger the same tier-fallback
+    swap as APIConnectionError/RateLimitError."""
+    content = json.dumps(VALID_EXTRACTION_JSON)
+    primary_client = MagicMock()
+    primary_client.chat.completions.create.side_effect = _make_internal_server_error()
+    fallback_client = _mock_openai_client(content)
+
+    primary_choice = ModelChoice(
+        tier="high", model="llama3.1", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+    fallback_choice = ModelChoice(
+        tier="low", model="llama3.2:1b", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+
+    with (
+        patch(
+            "regradar.agents.analysis_agent._get_llm_client",
+            return_value=(primary_client, "llama3.1", primary_choice),
+        ),
+        patch(
+            "regradar.agents.analysis_agent.other_tier_choice",
+            return_value=fallback_choice,
+        ),
+        patch(
+            "regradar.agents.analysis_agent.build_client",
+            return_value=fallback_client,
+        ),
+    ):
+        result = analyze_node(_make_state_with_chunks())
+
+    assert result.extraction is not None
+    assert result.extraction.model_used == "llama3.2:1b"
+
+
+def test_analyze_node_falls_back_when_primary_fails_on_last_original_attempt() -> None:
+    """Reproduces the off-by-one finding: if the primary tier fails with a
+    connection error on what would have been the LAST attempt of the
+    original MAX_ATTEMPTS budget (attempt index 1 of 2), the fallback tier
+    must still actually be called — not silently dropped because the loop
+    ran out of iterations right after the swap."""
+    content = json.dumps(VALID_EXTRACTION_JSON)
+    malformed_response = MagicMock()
+    malformed_response.choices = [MagicMock(message=MagicMock(content="not valid json"))]
+
+    primary_client = MagicMock()
+    # attempt 0: malformed JSON -> ordinary retry (still on primary tier).
+    # attempt 1 (the last attempt of the original 2-attempt budget):
+    # connection error -> must trigger fallback AND that fallback must
+    # actually be invoked, not discarded.
+    primary_client.chat.completions.create.side_effect = [
+        malformed_response,
+        APIConnectionError(request=MagicMock()),
+    ]
+    fallback_client = _mock_openai_client(content)
+
+    primary_choice = ModelChoice(
+        tier="high", model="llama3.1", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+    fallback_choice = ModelChoice(
+        tier="low", model="llama3.2:1b", base_url="http://localhost:11434/v1", api_key="ollama-local"
+    )
+
+    with (
+        patch(
+            "regradar.agents.analysis_agent._get_llm_client",
+            return_value=(primary_client, "llama3.1", primary_choice),
+        ),
+        patch(
+            "regradar.agents.analysis_agent.other_tier_choice",
+            return_value=fallback_choice,
+        ),
+        patch(
+            "regradar.agents.analysis_agent.build_client",
+            return_value=fallback_client,
+        ),
+    ):
+        result = analyze_node(_make_state_with_chunks())
+
+    assert result.extraction is not None
+    assert result.extraction.model_used == "llama3.2:1b"
+    fallback_client.chat.completions.create.assert_called_once()
 
 
 def test_analyze_node_gives_up_after_fallback_also_fails() -> None:
