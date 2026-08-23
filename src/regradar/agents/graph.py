@@ -1,8 +1,8 @@
 """The LangGraph supervisor graph wiring the six pipeline agents together.
 
-triage_node, retrieve_node, and analyze_node are real implementations
-(AGENT-02, AGENT-06, AGENT-07) — summarize_node/deliver_node are still
-stubs for later tickets. retrieve_node is the only async node; the
+triage_node, retrieve_node, analyze_node, and summarize_node are real
+implementations (AGENT-02, AGENT-06, AGENT-07, AGENT-08) — deliver_node
+is still a stub for AGENT-10. retrieve_node is the only async node; the
 graph is run via ainvoke() (not invoke()) so it can await retrieve_node's
 DB query — LangGraph mixes sync and async nodes transparently in async
 execution.
@@ -16,13 +16,9 @@ from langgraph.graph.state import CompiledStateGraph
 from regradar.agents.analysis_agent import analyze_node
 from regradar.agents.rag_retrieval_agent import retrieve_node
 from regradar.agents.state import PipelineState
+from regradar.agents.summarization_agent import summarize_node
 from regradar.agents.triage_agent import triage_node
 from regradar.models.enums import RiskLevel
-
-
-def summarize_node(state: PipelineState) -> PipelineState:
-    """Stub — replaced by the persona-brief generator in AGENT-08."""
-    return state
 
 
 def deliver_node(state: PipelineState) -> PipelineState:
