@@ -68,6 +68,7 @@ class Settings(BaseSettings):
         default="http://localhost:11434/v1", alias="LOCAL_LLM_BASE_URL"
     )
     local_llm_model: str = Field(default="llama3.1", alias="LOCAL_LLM_MODEL")
+    local_llm_low_model: str = Field(default="llama3.2:1b", alias="LOCAL_LLM_LOW_MODEL")
     use_local_hf_inference: bool = Field(default=False, alias="USE_LOCAL_HF_INFERENCE")
     use_local_embeddings: bool = Field(default=False, alias="USE_LOCAL_EMBEDDINGS")
     local_embedding_model: str = Field(default="nomic-embed-text", alias="LOCAL_EMBEDDING_MODEL")
