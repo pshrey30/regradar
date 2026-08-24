@@ -72,6 +72,63 @@ async def test_successful_upload_sets_raw_pdf_s3_key(monkeypatch: pytest.MonkeyP
 
         obj = real_s3.get_object(Bucket=BUCKET_NAME, Key=key)
         assert obj["Body"].read() == SAMPLE_PDF_CONTENT
+        assert obj["ContentType"] == "application/pdf"
+
+
+async def test_html_document_is_stored_with_html_extension_and_content_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: most modern SEC EDGAR primary documents are HTML,
+    not PDF (verified live) — a real EDGAR document downloaded and stored
+    this way must not be mislabeled as .pdf/application/pdf, or it fails
+    to open as a PDF even though it downloaded successfully."""
+    html_content = b"<!DOCTYPE html><html><body><h1>Item 1A. Risk Factors</h1></body></html>"
+    response = MagicMock(status_code=200, content=html_content)
+    response.raise_for_status = MagicMock()
+
+    with mock_aws():
+        real_s3 = boto3.client("s3", region_name="us-east-1")
+        real_s3.create_bucket(Bucket=BUCKET_NAME)
+        monkeypatch.setattr(pdf_intake, "get_s3_client", lambda: real_s3)
+        monkeypatch.setattr(pdf_intake.httpx, "get", MagicMock(return_value=response))
+
+        filing = _make_filing_stub()
+        db = _make_mock_db(filing)
+
+        key = await pdf_intake.intake_pdf("https://example.com/filing.htm", uuid.uuid4(), db)
+
+        assert key.endswith(".html")
+        obj = real_s3.get_object(Bucket=BUCKET_NAME, Key=key)
+        assert obj["ContentType"] == "text/html"
+        assert obj["Body"].read() == html_content
+
+
+async def test_xml_document_is_stored_with_xml_extension_and_content_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: EDGAR's structured forms (Form 4, Form D, etc.)
+    serve their primary document as XML — same mislabeling risk as HTML."""
+    xml_content = b"<?xml version=\"1.0\"?><edgarSubmission><item>Form D</item></edgarSubmission>"
+    response = MagicMock(status_code=200, content=xml_content)
+    response.raise_for_status = MagicMock()
+
+    with mock_aws():
+        real_s3 = boto3.client("s3", region_name="us-east-1")
+        real_s3.create_bucket(Bucket=BUCKET_NAME)
+        monkeypatch.setattr(pdf_intake, "get_s3_client", lambda: real_s3)
+        monkeypatch.setattr(pdf_intake.httpx, "get", MagicMock(return_value=response))
+
+        filing = _make_filing_stub()
+        db = _make_mock_db(filing)
+
+        key = await pdf_intake.intake_pdf(
+            "https://example.com/primary_doc.xml", uuid.uuid4(), db
+        )
+
+        assert key.endswith(".xml")
+        obj = real_s3.get_object(Bucket=BUCKET_NAME, Key=key)
+        assert obj["ContentType"] == "application/xml"
+        assert obj["Body"].read() == xml_content
 
 
 async def test_download_sends_descriptive_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:

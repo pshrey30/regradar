@@ -1,10 +1,20 @@
-"""PDF intake: download, content-hash, dedup against S3, upload if new.
+"""Document intake: download, content-hash, dedup against S3, upload if new.
 
-Shared by every ingestion connector rather than duplicated per-source —
-none of the three connectors currently call this (EDGAR/FDA/FINRA store
-only metadata + a source URL today), but it's the module ING-05 exists to
-provide, ready for a connector or the pipeline worker to call once a
-filing needs its actual PDF archived.
+Shared by every ingestion connector — wired into sec_edgar.py, the only
+source with a real per-filing document to archive (see fda_rss.py/
+finra_feed.py's module docstrings for why it doesn't apply there).
+
+Despite the module's original "PDF" framing (ING-05), the archived
+content is not always a real PDF — verified live: most modern SEC EDGAR
+primary documents are HTML or XML, not PDF (SEC deprecated PDF-only
+primary filings years ago). The stored S3 key's extension and
+Content-Type are derived from the actual downloaded bytes (see
+_classify_document), not assumed to be PDF — an earlier version of this
+module hardcoded both to .pdf/application/pdf unconditionally, which
+silently mislabeled every non-PDF document archived this way: the file
+would download fine but fail to open as a PDF, since it never was one.
+rag/pdf_extraction.py already sniffs real content the same way, so
+extraction was never affected — only the S3 object's own labeling was.
 """
 
 import hashlib
@@ -51,8 +61,29 @@ def _download_with_retry(url: str, user_agent: str) -> bytes:
         return _download_pdf(url, user_agent)  # let a second failure propagate to the caller
 
 
-def _s3_key_for_hash(content_hash: str) -> str:
-    return f"filings/{content_hash}.pdf"
+PDF_MAGIC_BYTES = b"%PDF-"
+XML_DECLARATION = b"<?xml"
+
+
+def _classify_document(content: bytes) -> tuple[str, str]:
+    """(file_extension, content_type) based on the real downloaded bytes.
+
+    Real PDF binary -> pdf/application/pdf. An XML declaration (common for
+    EDGAR's structured forms, e.g. Form 4/Form D primary_doc.xml) ->
+    xml/application/xml. Anything else -> html/text/html, since that's
+    what EDGAR actually serves for narrative filings (10-K/10-Q/8-K/etc.)
+    and it's a reasonable, openable default for arbitrary markup.
+    """
+    stripped = content.lstrip()
+    if stripped[: len(PDF_MAGIC_BYTES)] == PDF_MAGIC_BYTES:
+        return "pdf", "application/pdf"
+    if stripped[: len(XML_DECLARATION)] == XML_DECLARATION:
+        return "xml", "application/xml"
+    return "html", "text/html"
+
+
+def _s3_key_for_hash(content_hash: str, extension: str) -> str:
+    return f"filings/{content_hash}.{extension}"
 
 
 def _object_exists(s3_client, bucket: str, key: str) -> bool:
@@ -80,7 +111,7 @@ async def intake_pdf(url: str, filing_id: uuid.UUID, db: AsyncSession) -> str:
     try:
         content = _download_with_retry(url, settings.sec_edgar_user_agent)
     except httpx.HTTPError as exc:
-        error_message = f"Failed to download PDF from {url}: {exc}"
+        error_message = f"Failed to download document from {url}: {exc}"
         logger.warning(error_message)
         filing = await db.get(Filing, filing_id)
         if filing is not None:
@@ -90,17 +121,16 @@ async def intake_pdf(url: str, filing_id: uuid.UUID, db: AsyncSession) -> str:
         raise PdfIntakeError(error_message) from exc
 
     content_hash = hashlib.sha256(content).hexdigest()
-    s3_key = _s3_key_for_hash(content_hash)
+    extension, content_type = _classify_document(content)
+    s3_key = _s3_key_for_hash(content_hash, extension)
 
     s3_client = get_s3_client()
     bucket = settings.s3_bucket_name
 
     if _object_exists(s3_client, bucket, s3_key):
-        logger.info("PDF with hash %s already in S3, skipping re-upload", content_hash)
+        logger.info("Document with hash %s already in S3, skipping re-upload", content_hash)
     else:
-        s3_client.put_object(
-            Bucket=bucket, Key=s3_key, Body=content, ContentType="application/pdf"
-        )
+        s3_client.put_object(Bucket=bucket, Key=s3_key, Body=content, ContentType=content_type)
 
     filing = await db.get(Filing, filing_id)
     if filing is not None:
