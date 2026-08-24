@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     slack_bot_token: SecretStr | None = Field(default=None, alias="SLACK_BOT_TOKEN")
     sendgrid_api_key: SecretStr | None = Field(default=None, alias="SENDGRID_API_KEY")
     sendgrid_from_email: str = Field(default="alerts@regradar.io", alias="SENDGRID_FROM_EMAIL")
+    delivery_email_recipient: str | None = Field(default=None, alias="DELIVERY_EMAIL_RECIPIENT")
     webhook_hmac_algorithm: str = Field(default="sha256", alias="WEBHOOK_HMAC_ALGORITHM")
 
     # ── Eval & observability ─────────────────────────────────
