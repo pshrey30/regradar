@@ -18,6 +18,10 @@ feedparser (not manual XML parsing) handles both well-formed and malformed
 RSS gracefully — a malformed feed still yields whatever entries it can
 parse via `bozo`/`bozo_exception`, rather than raising, which is exactly
 the graceful-degradation behavior this ticket asks for.
+
+PDF intake (ingestion/pdf_intake.py, wired into sec_edgar.py) does not
+apply here — this feed's entries link to HTML news pages on fda.gov, not
+PDF documents; there's no document URL in the feed data to archive.
 """
 
 import logging

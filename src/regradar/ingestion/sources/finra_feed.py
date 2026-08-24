@@ -28,6 +28,11 @@ The dataset is partitioned by tradeDate: FINRA's API requires an exact
 EQUAL filter on it (confirmed empirically — a request with no filter
 silently returns a stale/default partition, and sorting without an
 equality filter on the partition key returns HTTP 400).
+
+PDF intake (ingestion/pdf_intake.py, wired into sec_edgar.py) does not
+apply here — this connector polls the Reg SHO Threshold List, a tabular
+JSON dataset with no per-item document at all (every row shares the same
+static API endpoint URL); there is no PDF to archive.
 """
 
 import base64

@@ -81,6 +81,12 @@ def _settings_env(monkeypatch: pytest.MonkeyPatch):
 async def test_normal_new_filing_is_returned_and_inserted(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_response = MagicMock(status_code=200, text=SAMPLE_FEED)
     monkeypatch.setattr(sec_edgar.httpx, "get", MagicMock(return_value=mock_response))
+    # Not testing PDF-intake wiring here — that's its own dedicated set of
+    # tests below. Without this, the real _resolve_primary_document_url
+    # would make a real network call, and any resolved URL would then hit
+    # pdf_intake's own httpx.get, which is already monkeypatched above to
+    # return this feed's mock response — not a valid document.
+    monkeypatch.setattr(sec_edgar, "_resolve_primary_document_url", AsyncMock(return_value=None))
 
     db = _make_mock_db(existing_ids=set())
     result = await sec_edgar.poll_edgar(_make_source_config(), db)
@@ -247,3 +253,64 @@ def test_extract_cik_from_filing_url_parses_data_segment() -> None:
 
 def test_extract_cik_from_filing_url_returns_none_for_unrecognized_url() -> None:
     assert sec_edgar._extract_cik_from_filing_url("https://example.com/nothing") is None
+
+
+async def test_poll_edgar_calls_intake_pdf_for_each_new_filing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_response = MagicMock(status_code=200, text=SAMPLE_FEED)
+    monkeypatch.setattr(sec_edgar.httpx, "get", MagicMock(return_value=mock_response))
+    db = _make_mock_db()
+
+    mock_resolve = AsyncMock(
+        return_value=(
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000018/aapl-doc.htm"
+        )
+    )
+    mock_intake = AsyncMock(return_value="filings/abc123.pdf")
+    monkeypatch.setattr(sec_edgar, "_resolve_primary_document_url", mock_resolve)
+    monkeypatch.setattr(sec_edgar, "intake_pdf", mock_intake)
+
+    await sec_edgar.poll_edgar(_make_source_config(), db)
+
+    mock_resolve.assert_awaited_once()
+    mock_intake.assert_awaited_once()
+
+
+async def test_poll_edgar_continues_when_intake_pdf_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_response = MagicMock(status_code=200, text=SAMPLE_FEED)
+    monkeypatch.setattr(sec_edgar.httpx, "get", MagicMock(return_value=mock_response))
+    db = _make_mock_db()
+
+    monkeypatch.setattr(
+        sec_edgar,
+        "_resolve_primary_document_url",
+        AsyncMock(return_value="https://www.sec.gov/Archives/edgar/data/320193/x/doc.htm"),
+    )
+    monkeypatch.setattr(
+        sec_edgar, "intake_pdf", AsyncMock(side_effect=sec_edgar.PdfIntakeError("download failed"))
+    )
+
+    # Must not raise — a document download failure is not a reason to fail
+    # the whole poll cycle.
+    result = await sec_edgar.poll_edgar(_make_source_config(), db)
+
+    assert len(result) == 1  # the filing itself was still successfully inserted
+
+
+async def test_poll_edgar_skips_intake_pdf_when_primary_document_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_response = MagicMock(status_code=200, text=SAMPLE_FEED)
+    monkeypatch.setattr(sec_edgar.httpx, "get", MagicMock(return_value=mock_response))
+    db = _make_mock_db()
+
+    monkeypatch.setattr(sec_edgar, "_resolve_primary_document_url", AsyncMock(return_value=None))
+    mock_intake = AsyncMock()
+    monkeypatch.setattr(sec_edgar, "intake_pdf", mock_intake)
+
+    await sec_edgar.poll_edgar(_make_source_config(), db)
+
+    mock_intake.assert_not_awaited()

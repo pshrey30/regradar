@@ -43,6 +43,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.core.config import get_settings
+from regradar.ingestion.pdf_intake import PdfIntakeError, intake_pdf
 from regradar.ingestion.sources._common import insert_new_filing
 from regradar.ingestion.types import NewFiling
 from regradar.models.enums import FilingSource
@@ -260,6 +261,17 @@ async def poll_edgar(source_config: SourceConfig, db: AsyncSession) -> list[NewF
         if filing is None:
             continue
         inserted.append(candidate)
+
+        cik = _extract_cik_from_filing_url(candidate.filing_url)
+        if cik is not None:
+            document_url = await _resolve_primary_document_url(
+                cik, candidate.source_document_id, settings.sec_edgar_user_agent
+            )
+            if document_url is not None:
+                try:
+                    await intake_pdf(document_url, filing.id, db)
+                except PdfIntakeError as exc:
+                    logger.warning("PDF intake failed for filing %s: %s", filing.id, exc)
 
     await db.commit()
     return inserted
