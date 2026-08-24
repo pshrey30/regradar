@@ -64,3 +64,4 @@ class PipelineState(BaseModel):
     extraction: ExtractionResult | None = None
     briefs: BriefSet | None = None
     delivery_status: str | None = None
+    delivery_success: bool | None = None

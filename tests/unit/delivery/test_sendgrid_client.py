@@ -137,3 +137,35 @@ async def test_send_email_alert_returns_failed_when_sendgrid_not_configured(
     assert result.status == DeliveryStatus.FAILED
     assert result.response_code is None
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_send_email_alert_escapes_html_in_executive_brief(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SENDGRID_API_KEY", "sg-test-key")
+    from regradar.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(202)
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+
+    malicious_brief = "<script>alert(1)</script>"
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await send_email_alert(
+            recipient="alerts@example.com",
+            entity_name="Acme Corp",
+            filing_type="10-K",
+            risk_level=RiskLevel.HIGH,
+            executive_brief=malicious_brief,
+        )
+
+    call_kwargs = mock_client.post.call_args.kwargs
+    html_value = call_kwargs["json"]["content"][0]["value"]
+    assert "<script>" not in html_value
+    assert "&lt;script&gt;" in html_value
+    get_settings.cache_clear()

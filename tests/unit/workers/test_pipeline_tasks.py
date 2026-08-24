@@ -78,6 +78,7 @@ def test_process_filing_persists_classification_on_success(
                     "extraction": None,
                     "briefs": None,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -126,6 +127,7 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
                     "extraction": None,
                     "briefs": None,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -170,6 +172,7 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
                     "extraction": None,
                     "briefs": None,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -235,6 +238,7 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
             "extraction": None,
             "briefs": None,
             "delivery_status": None,
+            "delivery_success": None,
         }
 
     monkeypatch.setattr(
@@ -287,6 +291,7 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
                     "extraction": None,
                     "briefs": None,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -355,6 +360,7 @@ def test_process_filing_persists_extraction_on_success(
                     "extraction": extraction_result,
                     "briefs": briefs_result,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -425,6 +431,7 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
                     "extraction": None,
                     "briefs": None,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -493,6 +500,7 @@ def test_process_filing_marks_complete_when_delivery_ran(
                     "extraction": extraction_result,
                     "briefs": briefs_result,
                     "delivery_status": "slack=sent",
+                    "delivery_success": True,
                 }
             )
         ),
@@ -512,6 +520,70 @@ def test_process_filing_marks_complete_when_delivery_ran(
     assert added_brief.engineer_summary == briefs_result.engineer_summary
     assert added_brief.model_used == "llama3.1"
     assert filing.status == FilingStatus.COMPLETE
+
+
+def test_process_filing_stays_classifying_when_delivery_ran_but_nothing_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """delivery_status non-None but delivery_success False (every configured
+    channel failed) must NOT be treated as COMPLETE — it must fall through
+    to the CLASSIFYING default, same as if delivery hadn't run at all."""
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+    mock_db.add = MagicMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    extraction_result = ExtractionResult(
+        obligations=[{"description": "File report.", "source_chunk_index": 0}],
+        deadlines=[{"description": "Annual report", "date": "2027-01-01"}],
+        risk_flags=["material weakness"],
+        affected_products=[],
+        key_entities=["Acme Corp"],
+        competitor_mentions=[],
+        model_used="llama3.1",
+    )
+    briefs_result = BriefSet(
+        executive_brief="Sentence one. Sentence two. Sentence three.",
+        cco_summary="Short board-level summary.",
+        analyst_summary="- File report by 2027-01-01",
+        engineer_summary=f"filing_id={filing_id} domain=financial risk_level=low obligations_extracted=1 status=processed",
+        model_used="llama3.1",
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                    "extraction": extraction_result,
+                    "briefs": briefs_result,
+                    "delivery_status": "slack=failed, email=failed",
+                    "delivery_success": False,
+                }
+            )
+        ),
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert filing.status == FilingStatus.CLASSIFYING
 
 
 def test_process_filing_stays_classifying_when_delivery_status_none(
@@ -569,6 +641,7 @@ def test_process_filing_stays_classifying_when_delivery_status_none(
                     "extraction": extraction_result,
                     "briefs": briefs_result,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -622,6 +695,7 @@ def test_process_filing_marks_needs_review_when_summarization_fails(
                     "extraction": extraction_result,
                     "briefs": None,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -707,6 +781,7 @@ def test_process_filing_continues_when_embed_chunks_raises(
                     "extraction": extraction_result,
                     "briefs": briefs_result,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -803,6 +878,7 @@ def test_process_filing_continues_when_brief_commit_raises(
                     "extraction": extraction_result,
                     "briefs": briefs_result,
                     "delivery_status": None,
+                    "delivery_success": None,
                 }
             )
         ),
@@ -888,6 +964,7 @@ def test_process_filing_calls_chunk_filing_before_graph_invoke(
             "extraction": None,
             "briefs": None,
             "delivery_status": None,
+            "delivery_success": None,
         }
 
     monkeypatch.setattr(pipeline_tasks_module, "chunk_filing", _fake_chunk_filing)

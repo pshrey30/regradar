@@ -122,6 +122,7 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
     already_sent = {(d.channel, d.webhook_id) for d in existing.scalars().all()}
 
     statuses: list[str] = []
+    any_sent = False
 
     # --- Slack ---
     if (DeliveryChannel.SLACK, None) not in already_sent:
@@ -140,7 +141,9 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
                 # and every attempt still gets a Delivery row per this ticket's acceptance criteria
                 logger.warning("Slack delivery raised for filing %s: %s", state.filing_id, exc)
                 result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
-            await _record_delivery(db, filing.id, DeliveryChannel.SLACK, slack_url, result)
+            await _record_delivery(db, filing.id, DeliveryChannel.SLACK, "slack:default", result)
+            if result.status == DeliveryStatus.SENT:
+                any_sent = True
             statuses.append(f"slack={result.status.value}")
         else:
             statuses.append("slack=not_configured")
@@ -161,6 +164,8 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
                 logger.warning("Email delivery raised for filing %s: %s", state.filing_id, exc)
                 result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
             await _record_delivery(db, filing.id, DeliveryChannel.EMAIL, recipient, result)
+            if result.status == DeliveryStatus.SENT:
+                any_sent = True
             statuses.append(f"email={result.status.value}")
         else:
             statuses.append("email=not_configured")
@@ -197,6 +202,13 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
         await _record_delivery(
             db, filing.id, DeliveryChannel.WEBHOOK, webhook.url, result, webhook_id=webhook.id
         )
+        if result.status == DeliveryStatus.SENT:
+            any_sent = True
         statuses.append(f"webhook:{webhook.id}={result.status.value}")
 
-    return state.model_copy(update={"delivery_status": ", ".join(statuses) if statuses else "none"})
+    return state.model_copy(
+        update={
+            "delivery_status": ", ".join(statuses) if statuses else "none",
+            "delivery_success": any_sent,
+        }
+    )

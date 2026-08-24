@@ -72,7 +72,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             briefs_missing = result["extraction"] is not None and result["briefs"] is None
             if extraction_missing or briefs_missing:
                 filing.status = FilingStatus.NEEDS_REVIEW
-            elif result["delivery_status"] is not None:
+            elif result["delivery_status"] is not None and result["delivery_success"]:
                 filing.status = FilingStatus.COMPLETE
             else:
                 filing.status = FilingStatus.CLASSIFYING

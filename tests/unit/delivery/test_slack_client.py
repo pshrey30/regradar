@@ -110,3 +110,29 @@ async def test_send_slack_alert_includes_entity_name_and_risk_in_payload() -> No
     assert "Acme Corp" in payload_text
     assert "critical" in payload_text
     assert "https://example.com/filing" in payload_text
+
+
+@pytest.mark.asyncio
+async def test_send_slack_alert_escapes_filing_url_in_link_syntax() -> None:
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(200, "ok")
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+
+    malicious_url = "https://example.com/filing>|<script>"
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await send_slack_alert(
+            webhook_url="https://hooks.slack.com/services/T/B/X",
+            entity_name="Acme Corp",
+            filing_type="10-K",
+            filing_url=malicious_url,
+            risk_level=RiskLevel.HIGH,
+            cco_summary="High risk filing requires attention.",
+        )
+
+    call_kwargs = mock_client.post.call_args.kwargs
+    section_text = call_kwargs["json"]["attachments"][0]["blocks"][0]["text"]["text"]
+    assert malicious_url not in section_text
+    assert "&gt;" in section_text
+    assert "&lt;" in section_text

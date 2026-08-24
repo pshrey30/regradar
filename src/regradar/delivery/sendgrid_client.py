@@ -1,5 +1,6 @@
 """Sends filing alerts as HTML email via SendGrid's mail/send API."""
 
+import html
 import logging
 
 import httpx
@@ -15,10 +16,13 @@ SENDGRID_MAIL_SEND_URL = "https://api.sendgrid.com/v3/mail/send"
 
 def _render_html(entity_name: str, filing_type: str, risk_level: RiskLevel | None, executive_brief: str) -> str:
     risk_text = risk_level.value if risk_level else "unknown"
+    safe_entity_name = html.escape(entity_name)
+    safe_filing_type = html.escape(filing_type)
+    safe_executive_brief = html.escape(executive_brief)
     return (
-        f"<h2>{entity_name} — {filing_type}</h2>"
+        f"<h2>{safe_entity_name} — {safe_filing_type}</h2>"
         f"<p><strong>Risk level:</strong> {risk_text}</p>"
-        f"<p>{executive_brief}</p>"
+        f"<p>{safe_executive_brief}</p>"
     )
 
 
@@ -34,12 +38,12 @@ async def send_email_alert(
         logger.warning("SendGrid not configured; skipping email delivery")
         return DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
 
-    html = _render_html(entity_name, filing_type, risk_level, executive_brief)
+    html_body = _render_html(entity_name, filing_type, risk_level, executive_brief)
     payload = {
         "personalizations": [{"to": [{"email": recipient}]}],
         "from": {"email": settings.sendgrid_from_email},
         "subject": f"RegRadar Alert: {entity_name} — {filing_type}",
-        "content": [{"type": "text/html", "value": html}],
+        "content": [{"type": "text/html", "value": html_body}],
     }
     headers = {"Authorization": f"Bearer {settings.sendgrid_api_key.get_secret_value()}"}
     try:

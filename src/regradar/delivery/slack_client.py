@@ -18,6 +18,15 @@ _RISK_COLOR: dict[RiskLevel, str] = {
 _DEFAULT_COLOR = "#64748B"
 
 
+def _escape_mrkdwn(text: str) -> str:
+    """Escape Slack mrkdwn special characters per Slack's own escaping guidance.
+
+    Order matters: & must be escaped first, or the &amp;/&lt;/&gt; entities
+    produced by the later replacements would themselves get re-escaped.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 async def send_slack_alert(
     webhook_url: str,
     entity_name: str,
@@ -28,6 +37,9 @@ async def send_slack_alert(
 ) -> DeliveryResult:
     color = _RISK_COLOR.get(risk_level, _DEFAULT_COLOR) if risk_level else _DEFAULT_COLOR
     risk_text = risk_level.value if risk_level else "unknown"
+    safe_entity_name = _escape_mrkdwn(entity_name)
+    safe_cco_summary = _escape_mrkdwn(cco_summary)
+    safe_filing_url = _escape_mrkdwn(filing_url)
     payload = {
         "attachments": [
             {
@@ -38,10 +50,10 @@ async def send_slack_alert(
                         "text": {
                             "type": "mrkdwn",
                             "text": (
-                                f"*{entity_name}* — {filing_type}\n"
+                                f"*{safe_entity_name}* — {filing_type}\n"
                                 f"Risk: *{risk_text}*\n"
-                                f"{cco_summary}\n"
-                                f"<{filing_url}|View filing>"
+                                f"{safe_cco_summary}\n"
+                                f"<{safe_filing_url}|View filing>"
                             ),
                         },
                     }

@@ -115,6 +115,9 @@ async def test_deliver_node_sends_slack_when_configured_and_unsent(
     added = db.add.call_args_list[0].args[0]
     assert added.channel == DeliveryChannel.SLACK
     assert added.status == DeliveryStatus.SENT
+    # The persisted recipient must be a stable, non-secret identifier —
+    # never the real Slack webhook URL (which is a bearer credential).
+    assert added.recipient == "slack:default"
 
 
 @pytest.mark.asyncio
@@ -318,3 +321,45 @@ async def test_deliver_node_one_channel_failure_does_not_block_others(
     mock_email.assert_awaited_once()
     assert "slack=failed" in result.delivery_status
     assert "email=sent" in result.delivery_status
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_delivery_success_false_when_nothing_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every configured channel fails (or nothing is configured/matches),
+    delivery_success must be False (a definite "ran but sent nothing"
+    signal), not None (which is reserved for "didn't run at all")."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    state = _make_state()
+    filing = _make_filing(state.filing_id)
+    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+
+    with patch(
+        "regradar.agents.delivery_agent.send_slack_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.FAILED, response_code=500)),
+    ):
+        result = await deliver_node(state, _config(db))
+
+    assert result.delivery_status is not None
+    assert result.delivery_success is False
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_delivery_success_true_when_one_channel_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    state = _make_state()
+    filing = _make_filing(state.filing_id)
+    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+
+    with patch(
+        "regradar.agents.delivery_agent.send_slack_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=200)),
+    ):
+        result = await deliver_node(state, _config(db))
+
+    assert result.delivery_success is True
