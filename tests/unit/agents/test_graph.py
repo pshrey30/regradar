@@ -9,7 +9,6 @@ import uuid
 import pytest
 
 from regradar.agents.graph import (
-    deliver_node,
     route_after_triage,
 )
 from regradar.agents.state import PipelineState
@@ -18,18 +17,6 @@ from regradar.models.enums import RiskLevel
 
 def _make_state(risk_level: RiskLevel | None = None) -> PipelineState:
     return PipelineState(filing_id=uuid.uuid4(), raw_text="filing text", risk_level=risk_level)
-
-
-@pytest.mark.parametrize(
-    "node",
-    [deliver_node],
-)
-def test_stub_node_returns_state_unchanged(node) -> None:
-    state = _make_state(risk_level=RiskLevel.HIGH)
-
-    result = node(state)
-
-    assert result == state
 
 
 @pytest.mark.parametrize(
