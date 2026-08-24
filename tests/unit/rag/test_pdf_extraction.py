@@ -1,11 +1,12 @@
-"""Unit tests for PDF extraction (fetch_pdf_bytes, extract_text_and_tables).
+"""Unit tests for document extraction (fetch_document_bytes, extract_text_and_tables).
 
-fetch_pdf_bytes is tested with moto (no real AWS), following the same
+fetch_document_bytes is tested with moto (no real AWS), following the same
 settings-env + cache_clear pattern as tests/unit/ingestion/test_pdf_intake.py.
-extract_text_and_tables is NOT mocked — it runs the real pdfplumber parser
-against a real checked-in PDF fixture
+extract_text_and_tables' PDF path is NOT mocked — it runs the real pdfplumber
+parser against a real checked-in PDF fixture
 (tests/fixtures/sample_filings/synthetic_table_filing.pdf), generated once
-via a reportlab script during design.
+via a reportlab script during design. The HTML path uses inline fixtures
+since modern SEC EDGAR primary documents are HTML/iXBRL, not PDF.
 """
 
 from pathlib import Path
@@ -16,7 +17,7 @@ from moto import mock_aws
 
 from regradar.rag import pdf_extraction
 from regradar.rag.chunking import TableBlock
-from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_pdf_bytes
+from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_document_bytes
 
 FIXTURE_PDF = (
     Path(__file__).parent.parent.parent / "fixtures" / "sample_filings" / "synthetic_table_filing.pdf"
@@ -43,12 +44,12 @@ def _settings_env(monkeypatch: pytest.MonkeyPatch):
 
 
 @mock_aws
-def test_fetch_pdf_bytes_downloads_from_s3() -> None:
+def test_fetch_document_bytes_downloads_from_s3() -> None:
     client = boto3.client("s3", region_name="us-east-1")
     client.create_bucket(Bucket=BUCKET_NAME)
     client.put_object(Bucket=BUCKET_NAME, Key="filings/test.pdf", Body=b"fake pdf bytes")
 
-    result = fetch_pdf_bytes("filings/test.pdf")
+    result = fetch_document_bytes("filings/test.pdf")
 
     assert result == b"fake pdf bytes"
 
@@ -72,3 +73,39 @@ def test_extract_text_and_tables_table_span_contains_table_content() -> None:
     table_slice = text[tables[0].start_char : tables[0].end_char]
     assert "Region Revenue($M) Growth(%) Headcount" in table_slice
     assert "Asia Pacific 198.5 9.8 542" in table_slice
+
+
+def test_extract_text_and_tables_handles_html_bytes() -> None:
+    html = b"""
+    <html><body>
+    <h1>Item 1A. Risk Factors</h1>
+    <p>Acme Corp faces a material weakness in internal controls.</p>
+    <table><tr><td>Deadline</td><td>2027-01-15</td></tr></table>
+    </body></html>
+    """
+
+    text, tables = extract_text_and_tables(html)
+
+    assert "Item 1A. Risk Factors" in text
+    assert "material weakness" in text
+    assert "<html>" not in text
+    assert len(tables) == 1
+    table_text = text[tables[0].start_char : tables[0].end_char]
+    assert "Deadline" in table_text
+    assert "2027-01-15" in table_text
+
+
+def test_extract_text_and_tables_strips_script_and_style_from_html() -> None:
+    html = b"""
+    <html><body>
+    <script>alert('should not appear');</script>
+    <style>.hidden { display: none; }</style>
+    <p>Real filing content here.</p>
+    </body></html>
+    """
+
+    text, _tables = extract_text_and_tables(html)
+
+    assert "alert" not in text
+    assert "display: none" not in text
+    assert "Real filing content here." in text

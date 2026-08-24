@@ -178,7 +178,7 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
         ),
     )
     monkeypatch.setattr(
-        pipeline_tasks_module, "fetch_pdf_bytes", lambda s3_key: b"fake pdf bytes"
+        pipeline_tasks_module, "fetch_document_bytes", lambda s3_key: b"fake pdf bytes"
     )
     monkeypatch.setattr(
         pipeline_tasks_module,
@@ -246,7 +246,7 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
     )
     monkeypatch.setattr(
         pipeline_tasks_module,
-        "fetch_pdf_bytes",
+        "fetch_document_bytes",
         MagicMock(side_effect=RuntimeError("S3 unavailable")),
     )
     mock_embed_chunks = AsyncMock()
@@ -297,7 +297,7 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
         ),
     )
     mock_fetch = MagicMock()
-    monkeypatch.setattr(pipeline_tasks_module, "fetch_pdf_bytes", mock_fetch)
+    monkeypatch.setattr(pipeline_tasks_module, "fetch_document_bytes", mock_fetch)
     mock_embed_chunks = AsyncMock()
     monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
 
@@ -400,7 +400,7 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
         pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
     )
     monkeypatch.setattr(
-        pipeline_tasks_module, "fetch_pdf_bytes", lambda s3_key: b"fake pdf bytes"
+        pipeline_tasks_module, "fetch_document_bytes", lambda s3_key: b"fake pdf bytes"
     )
     monkeypatch.setattr(
         pipeline_tasks_module,
@@ -734,7 +734,7 @@ def test_process_filing_continues_when_embed_chunks_raises(
         pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
     )
     monkeypatch.setattr(
-        pipeline_tasks_module, "fetch_pdf_bytes", lambda s3_key: b"fake pdf bytes"
+        pipeline_tasks_module, "fetch_document_bytes", lambda s3_key: b"fake pdf bytes"
     )
     monkeypatch.setattr(
         pipeline_tasks_module,
@@ -831,7 +831,7 @@ def test_process_filing_continues_when_brief_commit_raises(
         pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
     )
     monkeypatch.setattr(
-        pipeline_tasks_module, "fetch_pdf_bytes", lambda s3_key: b"fake pdf bytes"
+        pipeline_tasks_module, "fetch_document_bytes", lambda s3_key: b"fake pdf bytes"
     )
     monkeypatch.setattr(
         pipeline_tasks_module,
@@ -929,7 +929,7 @@ def test_process_filing_calls_chunk_filing_before_graph_invoke(
         pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
     )
     monkeypatch.setattr(
-        pipeline_tasks_module, "fetch_pdf_bytes", lambda s3_key: b"fake pdf bytes"
+        pipeline_tasks_module, "fetch_document_bytes", lambda s3_key: b"fake pdf bytes"
     )
     monkeypatch.setattr(
         pipeline_tasks_module,

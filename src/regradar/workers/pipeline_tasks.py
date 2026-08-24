@@ -22,7 +22,7 @@ from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
 from regradar.rag.chunking import chunk_filing
 from regradar.rag.embeddings import embed_chunks
-from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_pdf_bytes
+from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_document_bytes
 from regradar.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
@@ -52,8 +52,8 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
         chunks: list = []
         if filing.raw_pdf_s3_key:
             try:
-                pdf_bytes = fetch_pdf_bytes(filing.raw_pdf_s3_key)
-                raw_text, tables = extract_text_and_tables(pdf_bytes)
+                document_bytes = fetch_document_bytes(filing.raw_pdf_s3_key)
+                raw_text, tables = extract_text_and_tables(document_bytes)
                 if raw_text:
                     chunks = chunk_filing(raw_text, tables)
             except Exception as exc:  # noqa: BLE001 — never crash the pipeline over a bad/missing PDF
