@@ -28,19 +28,27 @@ class PdfIntakeError(Exception):
     """Raised when a PDF can't be downloaded after retrying once."""
 
 
-def _download_pdf(url: str) -> bytes:
-    response = httpx.get(url, timeout=30.0, follow_redirects=True)
+def _download_pdf(url: str, user_agent: str) -> bytes:
+    # SEC EDGAR (and many other sites) return 403 Forbidden on any request
+    # without a descriptive User-Agent — verified live: every real EDGAR
+    # document download failed this way until this header was added, even
+    # though the feed/API requests elsewhere in this project already send
+    # one. Sending it unconditionally, regardless of source, is harmless
+    # for sources that don't require it.
+    response = httpx.get(
+        url, headers={"User-Agent": user_agent}, timeout=30.0, follow_redirects=True
+    )
     response.raise_for_status()
     return response.content
 
 
-def _download_with_retry(url: str) -> bytes:
+def _download_with_retry(url: str, user_agent: str) -> bytes:
     try:
-        return _download_pdf(url)
+        return _download_pdf(url, user_agent)
     except httpx.HTTPError:
         logger.warning("First download attempt failed for %s, retrying once", url)
         time.sleep(1)
-        return _download_pdf(url)  # let a second failure propagate to the caller
+        return _download_pdf(url, user_agent)  # let a second failure propagate to the caller
 
 
 def _s3_key_for_hash(content_hash: str) -> str:
@@ -70,7 +78,7 @@ async def intake_pdf(url: str, filing_id: uuid.UUID, db: AsyncSession) -> str:
     settings = get_settings()
 
     try:
-        content = _download_with_retry(url)
+        content = _download_with_retry(url, settings.sec_edgar_user_agent)
     except httpx.HTTPError as exc:
         error_message = f"Failed to download PDF from {url}: {exc}"
         logger.warning(error_message)

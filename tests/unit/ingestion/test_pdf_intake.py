@@ -74,6 +74,26 @@ async def test_successful_upload_sets_raw_pdf_s3_key(monkeypatch: pytest.MonkeyP
         assert obj["Body"].read() == SAMPLE_PDF_CONTENT
 
 
+async def test_download_sends_descriptive_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: real SEC EDGAR returns 403 Forbidden on any document
+    download with no User-Agent header — verified live during PDF-intake
+    wiring, even though this download function had never sent one."""
+    mock_get = MagicMock(return_value=_mock_http_response())
+    monkeypatch.setattr(pdf_intake.httpx, "get", mock_get)
+
+    with mock_aws():
+        real_s3 = boto3.client("s3", region_name="us-east-1")
+        real_s3.create_bucket(Bucket=BUCKET_NAME)
+        monkeypatch.setattr(pdf_intake, "get_s3_client", lambda: real_s3)
+
+        filing = _make_filing_stub()
+        db = _make_mock_db(filing)
+        await pdf_intake.intake_pdf("https://example.com/filing.pdf", uuid.uuid4(), db)
+
+    call_headers = mock_get.call_args.kwargs["headers"]
+    assert call_headers["User-Agent"] == "RegRadar/1.0 (test@example.com)"
+
+
 async def test_duplicate_content_is_not_reuploaded(monkeypatch: pytest.MonkeyPatch) -> None:
     with mock_aws():
         real_s3 = boto3.client("s3", region_name="us-east-1")
