@@ -28,12 +28,12 @@ from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.core.config import get_settings
+from regradar.ingestion.sources._common import insert_new_filing
 from regradar.ingestion.types import NewFiling
-from regradar.models.enums import FilingSource, FilingStatus
+from regradar.models.enums import FilingSource
 from regradar.models.filing import Filing
 from regradar.models.source_config import SourceConfig
 
@@ -185,29 +185,9 @@ async def poll_edgar(source_config: SourceConfig, db: AsyncSession) -> list[NewF
     for candidate in candidates:
         if candidate.source_document_id in existing_ids:
             continue
-
-        try:
-            async with db.begin_nested():
-                db.add(
-                    Filing(
-                        source=FilingSource.SEC,
-                        source_document_id=candidate.source_document_id,
-                        entity_name=candidate.entity_name,
-                        filing_type=candidate.filing_type,
-                        filing_url=candidate.filing_url,
-                        published_at=candidate.published_at,
-                        ingested_at=datetime.now(UTC),
-                        status=FilingStatus.INGESTED,
-                    )
-                )
-        except IntegrityError:
-            # Lost a race to another poller inserting the same accession
-            # number between our existence check and this insert — the
-            # database-level unique constraint is the real guarantee here,
-            # this pre-check is just an optimization to skip the round trip
-            # for the common case.
+        filing = await insert_new_filing(db, FilingSource.SEC, candidate)
+        if filing is None:
             continue
-
         inserted.append(candidate)
 
     await db.commit()

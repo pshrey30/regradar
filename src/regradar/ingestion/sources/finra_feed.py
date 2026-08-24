@@ -37,12 +37,12 @@ from datetime import UTC, date, datetime
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.core.config import get_settings
+from regradar.ingestion.sources._common import insert_new_filing
 from regradar.ingestion.types import NewFiling
-from regradar.models.enums import FilingSource, FilingStatus
+from regradar.models.enums import FilingSource
 from regradar.models.filing import Filing
 from regradar.models.source_config import SourceConfig
 
@@ -199,24 +199,9 @@ async def poll_finra(
     for candidate in candidates:
         if candidate.source_document_id in existing_ids:
             continue
-
-        try:
-            async with db.begin_nested():
-                db.add(
-                    Filing(
-                        source=FilingSource.FINRA,
-                        source_document_id=candidate.source_document_id,
-                        entity_name=candidate.entity_name,
-                        filing_type=candidate.filing_type,
-                        filing_url=candidate.filing_url,
-                        published_at=candidate.published_at,
-                        ingested_at=datetime.now(UTC),
-                        status=FilingStatus.INGESTED,
-                    )
-                )
-        except IntegrityError:
+        filing = await insert_new_filing(db, FilingSource.FINRA, candidate)
+        if filing is None:
             continue
-
         inserted.append(candidate)
 
     await db.commit()
