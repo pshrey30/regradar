@@ -145,3 +145,105 @@ def test_rate_limiter_sleeps_between_calls(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert len(sleep_calls) == 1
     assert sleep_calls[0] > 0
+
+
+SAMPLE_SUBMISSIONS_JSON = {
+    "filings": {
+        "recent": {
+            "accessionNumber": ["0000320193-25-000079", "0001140361-26-033928"],
+            "form": ["10-K", "4"],
+            "primaryDocument": ["aapl-20250927.htm", "xslF345X06/form4.xml"],
+        }
+    }
+}
+
+
+def _mock_async_client(response=None, side_effect=None) -> MagicMock:
+    client = AsyncMock()
+    if side_effect is not None:
+        client.get.side_effect = side_effect
+    else:
+        client.get.return_value = response
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = False
+    return client
+
+
+async def test_resolve_primary_document_url_returns_real_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = SAMPLE_SUBMISSIONS_JSON
+    monkeypatch.setattr(
+        sec_edgar.httpx, "AsyncClient", MagicMock(return_value=_mock_async_client(mock_response))
+    )
+
+    result = await sec_edgar._resolve_primary_document_url(
+        cik="320193", accession_number="0000320193-25-000079", user_agent="test-agent"
+    )
+
+    assert result == (
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm"
+    )
+
+
+async def test_resolve_primary_document_url_returns_none_when_accession_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = SAMPLE_SUBMISSIONS_JSON
+    monkeypatch.setattr(
+        sec_edgar.httpx, "AsyncClient", MagicMock(return_value=_mock_async_client(mock_response))
+    )
+
+    result = await sec_edgar._resolve_primary_document_url(
+        cik="320193", accession_number="9999999999-99-999999", user_agent="test-agent"
+    )
+
+    assert result is None
+
+
+async def test_resolve_primary_document_url_returns_none_on_request_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sec_edgar.httpx,
+        "AsyncClient",
+        MagicMock(
+            return_value=_mock_async_client(side_effect=sec_edgar.httpx.RequestError("timeout"))
+        ),
+    )
+
+    result = await sec_edgar._resolve_primary_document_url(
+        cik="320193", accession_number="0000320193-25-000079", user_agent="test-agent"
+    )
+
+    assert result is None
+
+
+async def test_resolve_primary_document_url_returns_none_on_non_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    monkeypatch.setattr(
+        sec_edgar.httpx, "AsyncClient", MagicMock(return_value=_mock_async_client(mock_response))
+    )
+
+    result = await sec_edgar._resolve_primary_document_url(
+        cik="320193", accession_number="0000320193-25-000079", user_agent="test-agent"
+    )
+
+    assert result is None
+
+
+def test_extract_cik_from_filing_url_parses_data_segment() -> None:
+    url = (
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019326000018/"
+        "0000320193-26-000018-index.htm"
+    )
+    assert sec_edgar._extract_cik_from_filing_url(url) == "320193"
+
+
+def test_extract_cik_from_filing_url_returns_none_for_unrecognized_url() -> None:
+    assert sec_edgar._extract_cik_from_filing_url("https://example.com/nothing") is None

@@ -20,8 +20,20 @@ filing index URL per entry, no CIK or search term required. Also: it
 returns no ETag/Last-Modified headers (verified empirically), so dedup
 here is DB-driven (source_document_id uniqueness) rather than
 conditional-GET based.
+
+The submissions API is used after all, just not for discovery — the
+current-filings feed's <link> only points at a filing's index PAGE, not a
+direct document URL, so once a filing is genuinely new, this connector
+makes one more request per filing to that same submissions API
+(data.sec.gov/submissions/CIK##########.json, scoped by the CIK already
+present in the feed's own <link> URL) to read its primaryDocument field —
+verified live against a real filing (Apple's most recent 10-K) to be
+authoritative, rather than guessing from index.json's directory listing
+(whose "type" field is a MIME-icon hint for the web UI, not a real
+document-type field).
 """
 
+import logging
 import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
@@ -37,7 +49,10 @@ from regradar.models.enums import FilingSource
 from regradar.models.filing import Filing
 from regradar.models.source_config import SourceConfig
 
+logger = logging.getLogger(__name__)
+
 EDGAR_CURRENT_FEED_URL = "https://www.sec.gov/cgi-bin/browse-edgar"
+SUBMISSIONS_API_URL = "https://data.sec.gov/submissions/CIK{cik:0>10}.json"
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
 
@@ -97,6 +112,62 @@ def _fetch_current_filings_feed(user_agent: str, count: int = 100) -> httpx.Resp
         headers={"User-Agent": user_agent},
         timeout=10.0,
     )
+
+
+def _extract_cik_from_filing_url(filing_url: str) -> str | None:
+    """The current-filings feed's index-page link always looks like
+    .../Archives/edgar/data/{cik}/{accession-no-dashes}/{accession}-index.htm
+    — the CIK segment is unpadded (no leading zeros)."""
+    marker = "/data/"
+    idx = filing_url.find(marker)
+    if idx == -1:
+        return None
+    remainder = filing_url[idx + len(marker) :]
+    cik = remainder.split("/", 1)[0]
+    return cik if cik.isdigit() else None
+
+
+async def _resolve_primary_document_url(
+    cik: str, accession_number: str, user_agent: str
+) -> str | None:
+    """Resolve a filing's actual downloadable primary document URL.
+
+    The current-filings feed only gives an index-page URL, not a direct
+    document link. EDGAR's per-company submissions API has an
+    authoritative primaryDocument field per accession (see the module
+    docstring for why this, not index.json, is the reliable source).
+
+    Returns None (never raises) on any failure — a filing whose primary
+    document can't be resolved this cycle just doesn't get its document
+    archived yet; it isn't a reason to fail the whole poll.
+    """
+    _get_rate_limiter().wait()
+    url = SUBMISSIONS_API_URL.format(cik=cik)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers={"User-Agent": user_agent})
+    except httpx.RequestError as exc:
+        logger.warning("Failed to fetch submissions for CIK %s: %s", cik, exc)
+        return None
+
+    if response.status_code != 200:
+        return None
+
+    try:
+        data = response.json()
+        recent = data["filings"]["recent"]
+        accession_numbers = recent["accessionNumber"]
+        primary_documents = recent["primaryDocument"]
+    except (KeyError, ValueError) as exc:
+        logger.warning("Malformed submissions response for CIK %s: %s", cik, exc)
+        return None
+
+    if accession_number not in accession_numbers:
+        return None
+    index = accession_numbers.index(accession_number)
+    primary_document = primary_documents[index]
+    accession_no_dashes = accession_number.replace("-", "")
+    return f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_no_dashes}/{primary_document}"
 
 
 def _parse_feed(xml_text: str) -> list[NewFiling]:
