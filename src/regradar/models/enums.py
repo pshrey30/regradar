@@ -64,3 +64,11 @@ class EvalRunType(str, enum.Enum):
     PRE_DEPLOY_REGRESSION = "pre_deploy_regression"
     SCHEDULED = "scheduled"
     MANUAL = "manual"
+
+
+class ApiKeyRole(str, enum.Enum):
+    ADMIN = "admin"
+    ANALYST = "analyst"
+    EXECUTIVE = "executive"
+    LEGAL_COUNSEL = "legal_counsel"
+    ENG_LEAD = "eng_lead"
