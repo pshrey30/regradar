@@ -38,7 +38,7 @@ async def enforce_rate_limit(
         count = await client.incr(redis_key)
         if count == 1:
             await client.expire(redis_key, _KEY_TTL_SECONDS)
-    except Exception:  # a Redis outage must degrade, not block all traffic
+    except Exception:  # noqa: BLE001 — a Redis outage must degrade, not block all traffic
         logger.warning("Rate limit check failed; failing open.", exc_info=True)
         return key
 
