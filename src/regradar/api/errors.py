@@ -13,8 +13,14 @@ from regradar.api.middleware.request_id import request_id_ctx
 class ApiError(HTTPException):
     """An HTTPException that renders through the shared error envelope."""
 
-    def __init__(self, status_code: int, code: str, message: str) -> None:
-        super().__init__(status_code=status_code, detail=message)
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(status_code=status_code, detail=message, headers=headers)
         self.code = code
 
 
@@ -30,4 +36,5 @@ def register_error_handlers(app: FastAPI) -> None:
                     "request_id": request_id_ctx.get(),
                 }
             },
+            headers=exc.headers,
         )
