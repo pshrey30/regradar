@@ -265,4 +265,5 @@ def test_list_filings_query_only_selects_complete_status_joined_to_briefs(
     page_compiled = str(page_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "complete" in count_compiled.lower()
     assert "complete" in page_compiled.lower()
+    assert "join briefs" in count_compiled.lower() or "join public.briefs" in count_compiled.lower()
     assert "join briefs" in page_compiled.lower() or "join public.briefs" in page_compiled.lower()

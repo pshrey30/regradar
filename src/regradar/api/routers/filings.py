@@ -73,7 +73,12 @@ async def list_filings(
 ) -> FilingListResponse:
     filters = _build_filters(role=key.role, domain=domain, risk=risk, since=since)
 
-    total_stmt = select(func.count()).select_from(Filing).where(and_(*filters))
+    total_stmt = (
+        select(func.count())
+        .select_from(Filing)
+        .join(Brief, Brief.filing_id == Filing.id)
+        .where(and_(*filters))
+    )
     total = (await db.execute(total_stmt)).scalar_one()
 
     page_stmt = (
