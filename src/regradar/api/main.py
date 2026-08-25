@@ -3,15 +3,14 @@
 import logging
 from importlib.metadata import version
 
-import redis.asyncio as aioredis
 from fastapi import FastAPI, Response
 from sqlalchemy import text
 
 from regradar.api.errors import register_error_handlers
 from regradar.api.middleware.request_id import RequestIdFilter, RequestIdMiddleware
 from regradar.api.routers.whoami import router as whoami_router
-from regradar.core.config import get_settings
 from regradar.core.db import get_engine
+from regradar.core.redis_client import get_redis_client
 
 logging.getLogger().addFilter(RequestIdFilter())
 
@@ -27,13 +26,10 @@ async def _check_database() -> bool:
 
 
 async def _check_redis() -> bool:
-    client = aioredis.from_url(get_settings().redis_url.get_secret_value())
     try:
-        return bool(await client.ping())
+        return bool(await get_redis_client().ping())
     except Exception:  # noqa: BLE001 — health check must degrade, not raise
         return False
-    finally:
-        await client.aclose()
 
 
 def create_app() -> FastAPI:

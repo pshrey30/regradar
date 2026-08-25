@@ -45,3 +45,19 @@ def _reset_db_engine_singleton():
     yield
     db_module._engine = None
     db_module._session_factory = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_redis_client_singleton():
+    """Reset core.redis_client's cached client before and after each test.
+
+    Same reasoning as _reset_db_engine_singleton above — a cached client
+    tied to one test's event loop breaks when reused from another test's
+    loop, and tests that monkeypatch settings shouldn't leak a
+    previously-built client into a later test.
+    """
+    import regradar.core.redis_client as redis_client_module
+
+    redis_client_module._client = None
+    yield
+    redis_client_module._client = None
