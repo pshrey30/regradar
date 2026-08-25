@@ -144,11 +144,14 @@ def test_list_filings_domain_filter_applies_to_query(monkeypatch: pytest.MonkeyP
         headers={"Authorization": "Bearer rr_test-key"},
     )
 
-    # Both the COUNT and the page SELECT must carry the domain filter — compile
-    # each captured statement and confirm the filing_domain column is referenced.
+    # Both the COUNT and the page SELECT must carry the domain filter. Assert the
+    # literal filter *value* ('clinical') appears in the compiled WHERE clause —
+    # not just the column name "domain", which is guaranteed present in the page
+    # statement regardless (it's a selected column) and would pass even if the
+    # WHERE-clause filter were accidentally dropped from the page query.
     for call in mock_db.execute.call_args_list:
-        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": False}))
-        assert "domain" in compiled
+        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "'clinical'" in compiled
 
 
 def test_list_filings_invalid_domain_returns_422(monkeypatch: pytest.MonkeyPatch):
@@ -238,9 +241,69 @@ def test_list_filings_since_filter_applies_to_query(monkeypatch: pytest.MonkeyPa
         headers={"Authorization": "Bearer rr_test-key"},
     )
 
+    # Assert the literal filter *value* appears in the compiled WHERE clause —
+    # not just the string "published_at", which is guaranteed present in the
+    # page statement regardless (it's the ORDER BY column) and would pass even
+    # if the WHERE-clause filter were accidentally dropped from the page query.
     for call in mock_db.execute.call_args_list:
-        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": False}))
-        assert "published_at" in compiled
+        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "2026-01-01 00:00:00" in compiled
+
+
+def test_list_filings_page_query_orders_by_published_at_then_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Pagination must be deterministic: ties on published_at (common in practice,
+    since regulatory feeds publish in batches) need a secondary sort key or
+    consecutive pages can return the same filing twice and silently skip another.
+    """
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/filings", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    page_stmt = mock_db.execute.call_args_list[1].args[0]
+    compiled = str(page_stmt.compile(compile_kwargs={"literal_binds": True}))
+    order_by_clause = compiled.split("ORDER BY", 1)[1]
+    assert "published_at" in order_by_clause
+    assert "id" in order_by_clause
+    assert len(page_stmt._order_by_clauses) == 2
+
+
+def test_page_over_max_returns_422(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    _mock_db(monkeypatch, total=0, rows=[])
+
+    response = TestClient(create_app()).get(
+        "/v1/filings",
+        params={"page": 100_001},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_naive_since_is_normalized_to_utc_not_server_local_time(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A naive `since` (no timezone offset in the query string) must be treated
+    as UTC, not silently reinterpreted in the server's local timezone by
+    asyncpg's encoder (which calls naive_datetime.astimezone(utc)).
+    """
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/filings",
+        params={"since": "2026-01-01T00:00:00"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    for call in mock_db.execute.call_args_list:
+        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "2026-01-01 00:00:00+00" in compiled
 
 
 def test_list_filings_query_only_selects_complete_status_joined_to_briefs(

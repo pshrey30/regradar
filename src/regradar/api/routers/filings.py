@@ -10,7 +10,7 @@ satisfies by construction: it never includes extraction data for any
 role).
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, func, select
@@ -36,6 +36,9 @@ def _build_filters(
     risk: RiskLevel | None,
     since: datetime | None,
 ) -> list:
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+
     filters: list = [Filing.status == FilingStatus.COMPLETE]
 
     if domain is not None:
@@ -68,7 +71,7 @@ async def list_filings(
     domain: FilingDomain | None = Query(default=None),
     risk: RiskLevel | None = Query(default=None),
     since: datetime | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=100_000),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> FilingListResponse:
     filters = _build_filters(role=key.role, domain=domain, risk=risk, since=since)
@@ -85,7 +88,7 @@ async def list_filings(
         select(Filing, Brief.executive_brief)
         .join(Brief, Brief.filing_id == Filing.id)
         .where(and_(*filters))
-        .order_by(Filing.published_at.desc())
+        .order_by(Filing.published_at.desc(), Filing.id.desc())
         .limit(page_size)
         .offset((page - 1) * page_size)
     )
