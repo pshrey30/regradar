@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     api_rate_limit_per_minute_default: int = Field(
         default=60, alias="API_RATE_LIMIT_PER_MINUTE_DEFAULT"
     )
-    api_key_hash_algorithm: str = Field(default="bcrypt", alias="API_KEY_HASH_ALGORITHM")
+    api_key_hash_algorithm: str = Field(default="sha256", alias="API_KEY_HASH_ALGORITHM")
 
     # ── Deployment ────────────────────────────────────────────
     fly_app_name_api: str = Field(default="regradar-api", alias="FLY_APP_NAME_API")
