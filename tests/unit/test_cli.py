@@ -48,3 +48,23 @@ def test_create_api_key_rejects_invalid_role(monkeypatch):
 
     with pytest.raises(SystemExit):
         cli_module._create_api_key(owner_label="test-owner", role="not-a-real-role")
+
+
+def test_create_api_key_with_explicit_rate_limit(monkeypatch):
+    mock_db = _patch_db(monkeypatch)
+
+    cli_module._create_api_key(owner_label="test-owner", role="admin", rate_limit_per_minute=3)
+
+    inserted = mock_db.add.call_args[0][0]
+    assert inserted.rate_limit_per_minute == 3
+
+
+def test_create_api_key_without_rate_limit_uses_model_default(monkeypatch):
+    mock_db = _patch_db(monkeypatch)
+
+    cli_module._create_api_key(owner_label="test-owner", role="admin")
+
+    inserted = mock_db.add.call_args[0][0]
+    # No explicit value was passed to ApiKey(...), so the ORM/DB default (60,
+    # per FOUND-02) applies rather than the CLI overriding it.
+    assert inserted.rate_limit_per_minute == 60

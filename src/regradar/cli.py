@@ -5,6 +5,8 @@ import asyncio
 
 from regradar.core.db import get_session_factory
 
+_DEFAULT_RATE_LIMIT_PER_MINUTE = 60  # matches ApiKey.rate_limit_per_minute's DB default (FOUND-02)
+
 
 def _poll_once() -> None:
     """Run a single ingestion cycle across all active sources, then exit."""
@@ -22,12 +24,16 @@ def _poll_once() -> None:
             print(f"{source_name}: {count} new filing(s)")
 
 
-def _create_api_key(*, owner_label: str, role: str) -> None:
+def _create_api_key(
+    *, owner_label: str, role: str, rate_limit_per_minute: int | None = None
+) -> None:
     """Mint a new API key: hash it, insert the row, print the plaintext once.
 
     This is a bootstrap mechanism for local dev, tests, and live
     verification — no ticket has built a real key-issuance endpoint yet
-    (FE-07 defers that to V2).
+    (FE-07 defers that to V2). rate_limit_per_minute is optional and mainly
+    useful for API-03's live verification, where a low limit (e.g. 3) lets a
+    real 429 be triggered in a handful of requests instead of 60+.
     """
     from regradar.core.api_keys import generate_api_key, hash_api_key
     from regradar.models.api_key import ApiKey
@@ -40,6 +46,9 @@ def _create_api_key(*, owner_label: str, role: str) -> None:
         raise SystemExit(f"Invalid role '{role}'. Must be one of: {valid}") from None
 
     plaintext_key = generate_api_key()
+    resolved_rate_limit = (
+        rate_limit_per_minute if rate_limit_per_minute is not None else _DEFAULT_RATE_LIMIT_PER_MINUTE
+    )
 
     async def _insert() -> None:
         session_factory = get_session_factory()
@@ -49,6 +58,7 @@ def _create_api_key(*, owner_label: str, role: str) -> None:
                 owner_label=owner_label,
                 role=role_enum,
                 is_active=True,
+                rate_limit_per_minute=resolved_rate_limit,
             )
             db.add(key)
             await db.commit()
@@ -56,6 +66,7 @@ def _create_api_key(*, owner_label: str, role: str) -> None:
     asyncio.run(_insert())
 
     print(f"Created API key for '{owner_label}' with role '{role_enum.value}'.")
+    print(f"Rate limit: {resolved_rate_limit} requests/minute.")
     print(f"Key (shown once, will not be shown again): {plaintext_key}")
 
 
@@ -70,13 +81,23 @@ def main() -> None:
     )
     create_key_parser.add_argument("--owner-label", required=True)
     create_key_parser.add_argument("--role", required=True)
+    create_key_parser.add_argument(
+        "--rate-limit-per-minute",
+        type=int,
+        default=None,
+        help="Override the key's rate limit (default: 60/minute).",
+    )
 
     args = parser.parse_args()
 
     if args.command == "poll-once":
         _poll_once()
     elif args.command == "create-api-key":
-        _create_api_key(owner_label=args.owner_label, role=args.role)
+        _create_api_key(
+            owner_label=args.owner_label,
+            role=args.role,
+            rate_limit_per_minute=args.rate_limit_per_minute,
+        )
     else:
         parser.print_help()
 
