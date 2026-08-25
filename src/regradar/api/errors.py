@@ -5,6 +5,7 @@ Every error response takes the same shape:
 """
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from regradar.api.middleware.request_id import request_id_ctx
@@ -37,4 +38,19 @@ def register_error_handlers(app: FastAPI) -> None:
                 }
             },
             headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "validation_error",
+                    "message": "Invalid request parameters.",
+                    "request_id": request_id_ctx.get(),
+                }
+            },
         )
