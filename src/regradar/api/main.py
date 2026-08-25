@@ -7,6 +7,7 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI, Response
 from sqlalchemy import text
 
+from regradar.api.errors import register_error_handlers
 from regradar.api.middleware.request_id import RequestIdFilter, RequestIdMiddleware
 from regradar.core.config import get_settings
 from regradar.core.db import get_engine
@@ -37,6 +38,7 @@ async def _check_redis() -> bool:
 def create_app() -> FastAPI:
     app = FastAPI(title="RegRadar", version=version("regradar"), docs_url="/docs")
     app.add_middleware(RequestIdMiddleware)
+    register_error_handlers(app)
 
     @app.get("/health")
     async def health(response: Response) -> dict[str, str]:
