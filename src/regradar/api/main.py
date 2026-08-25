@@ -1,16 +1,55 @@
-"""FastAPI application entrypoint.
+"""FastAPI application entrypoint: app factory, health check, and core middleware."""
 
-Minimal placeholder — the real app factory, DB/Redis connectivity checks,
-request-ID middleware, and OpenAPI configuration are implemented in API-01.
-This stub exists only so the `api` service in Docker Compose (FOUND-03) has
-something real to run and health-check against.
-"""
+import logging
+from importlib.metadata import version
 
-from fastapi import FastAPI
+import redis.asyncio as aioredis
+from fastapi import FastAPI, Response
+from sqlalchemy import text
 
-app = FastAPI(title="RegRadar")
+from regradar.api.middleware.request_id import RequestIdFilter, RequestIdMiddleware
+from regradar.core.config import get_settings
+from regradar.core.db import get_engine
+
+logging.getLogger().addFilter(RequestIdFilter())
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def _check_database() -> bool:
+    try:
+        engine = get_engine()
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return True
+    except Exception:  # noqa: BLE001 — health check must degrade, not raise
+        return False
+
+
+async def _check_redis() -> bool:
+    client = aioredis.from_url(get_settings().redis_url.get_secret_value())
+    try:
+        return bool(await client.ping())
+    except Exception:  # noqa: BLE001 — health check must degrade, not raise
+        return False
+    finally:
+        await client.aclose()
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="RegRadar", version=version("regradar"), docs_url="/docs")
+    app.add_middleware(RequestIdMiddleware)
+
+    @app.get("/health")
+    async def health(response: Response) -> dict[str, str]:
+        db_ok, redis_ok = await _check_database(), await _check_redis()
+        if not (db_ok and redis_ok):
+            response.status_code = 503
+        return {
+            "status": "ok" if db_ok and redis_ok else "error",
+            "database": "ok" if db_ok else "unreachable",
+            "redis": "ok" if redis_ok else "unreachable",
+        }
+
+    return app
+
+
+app = create_app()
