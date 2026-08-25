@@ -103,3 +103,9 @@ Request → RequestIdMiddleware → enforce_rate_limit
   routes, matching `api_keys.rate_limit_per_minute`'s singular column
 - Making Redis-unavailable fail closed — deliberately fails open for now; revisit if it becomes a
   real problem
+- Unauthenticated/invalid-key request throttling — a request with a missing, malformed, unknown,
+  or revoked key is rejected by `get_current_key` (401) before `enforce_rate_limit` ever runs its
+  Redis check, so such requests hit the database (a hash + indexed lookup) with no rate limit at
+  all. This is a real, accepted gap for this ticket's scope — an IP-based limiter for
+  unauthenticated traffic is different scope (would need a different key than `api_key_id`, since
+  there's no authenticated key yet) and would be its own ticket.

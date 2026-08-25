@@ -80,3 +80,5 @@ def test_whoami_returns_429_when_rate_limit_exceeded(monkeypatch: pytest.MonkeyP
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "rate_limit_exceeded"
     assert "retry-after" in {h.lower() for h in response.headers}
+    retry_after = int(response.headers["retry-after"])
+    assert 1 <= retry_after <= 60

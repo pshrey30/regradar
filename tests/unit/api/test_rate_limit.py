@@ -20,10 +20,10 @@ def _make_key(rate_limit_per_minute: int = 5) -> AuthenticatedKey:
     )
 
 
-def _patch_redis(monkeypatch: pytest.MonkeyPatch, *, incr_side_effect):
+def _patch_redis(monkeypatch: pytest.MonkeyPatch, *, incr_side_effect, expire_side_effect=None):
     mock_client = MagicMock()
     mock_client.incr = AsyncMock(side_effect=incr_side_effect)
-    mock_client.expire = AsyncMock()
+    mock_client.expire = AsyncMock(side_effect=expire_side_effect)
     monkeypatch.setattr(rate_limit_module, "get_redis_client", lambda: mock_client)
     return mock_client
 
@@ -46,13 +46,28 @@ async def test_first_hit_in_window_sets_expiry(monkeypatch: pytest.MonkeyPatch):
     mock_client.expire.assert_awaited_once()
 
 
-async def test_subsequent_hit_does_not_reset_expiry(monkeypatch: pytest.MonkeyPatch):
+async def test_subsequent_hit_calls_expire_with_nx_to_avoid_resetting_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+):
     mock_client = _patch_redis(monkeypatch, incr_side_effect=[2])
     key = _make_key(rate_limit_per_minute=5)
 
     await rate_limit_module.enforce_rate_limit(key=key)
 
-    mock_client.expire.assert_not_awaited()
+    mock_client.expire.assert_awaited_once_with(
+        mock_client.expire.call_args[0][0], rate_limit_module._KEY_TTL_SECONDS, nx=True
+    )
+
+
+async def test_expire_failure_after_successful_incr_fails_open(monkeypatch: pytest.MonkeyPatch):
+    _patch_redis(
+        monkeypatch, incr_side_effect=[1], expire_side_effect=ConnectionError("redis down")
+    )
+    key = _make_key(rate_limit_per_minute=5)
+
+    result = await rate_limit_module.enforce_rate_limit(key=key)
+
+    assert result is key
 
 
 async def test_over_limit_raises_429_with_retry_after(monkeypatch: pytest.MonkeyPatch):
@@ -66,6 +81,8 @@ async def test_over_limit_raises_429_with_retry_after(monkeypatch: pytest.Monkey
     assert exc_info.value.code == "rate_limit_exceeded"
     assert exc_info.value.headers is not None
     assert "Retry-After" in exc_info.value.headers
+    retry_after = int(exc_info.value.headers["Retry-After"])
+    assert 1 <= retry_after <= 60
 
 
 async def test_two_keys_have_independent_counters(monkeypatch: pytest.MonkeyPatch):
