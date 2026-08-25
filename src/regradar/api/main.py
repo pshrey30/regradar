@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from regradar.api.errors import register_error_handlers
 from regradar.api.middleware.request_id import RequestIdFilter, RequestIdMiddleware
+from regradar.api.routers.whoami import router as whoami_router
 from regradar.core.config import get_settings
 from regradar.core.db import get_engine
 
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="RegRadar", version=version("regradar"), docs_url="/docs")
     app.add_middleware(RequestIdMiddleware)
     register_error_handlers(app)
+    app.include_router(whoami_router)
 
     @app.get("/health")
     async def health(response: Response) -> dict[str, str]:

@@ -64,6 +64,13 @@ where = ["src"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends(...)/Query(...)/Header(...) in argument defaults is the
+# idiomatic dependency-injection pattern, not the mutable-default-argument
+# bug B008 exists to catch — every authenticated route (starting with
+# GET /v1/_whoami in API-02) uses Depends(get_current_key) this way.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header"]
+
 [tool.mypy]
 python_version = "3.11"
 packages = ["regradar"]
