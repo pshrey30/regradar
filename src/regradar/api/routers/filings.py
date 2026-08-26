@@ -32,6 +32,7 @@ from regradar.rag.retriever import retrieve_similar_filings
 from regradar.schemas.filings import (
     FilingListItem,
     FilingListResponse,
+    PersonaBriefResponse,
     SearchRequest,
     SearchResponse,
     SearchSource,
@@ -279,3 +280,53 @@ async def search_filings(
 
     answer = _synthesize_answer(body.query, sources)
     return SearchResponse(answer=answer, sources=sources, degraded=answer is None)
+
+
+_VALID_PERSONAS = {"cco", "analyst", "engineer"}
+
+
+@router.get("/v1/filings/{filing_id}/brief", response_model=PersonaBriefResponse)
+async def get_filing_brief(
+    filing_id: uuid.UUID,
+    persona: str | None = Query(default=None),
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_db),
+) -> PersonaBriefResponse:
+    """One persona's brief text. Omitting persona defaults to the
+    executive brief. An Executive-role caller is always served the cco
+    summary regardless of what persona value it requests — silently
+    narrowed, the same pattern API-04 uses for Executive's risk filter —
+    but a genuinely invalid persona value still 422s for every role,
+    validated before the role-based narrowing is applied.
+    """
+    if persona is not None and persona not in _VALID_PERSONAS:
+        raise ApiError(
+            status_code=422,
+            code="invalid_persona",
+            message=f"persona must be one of: {', '.join(sorted(_VALID_PERSONAS))}",
+        )
+
+    filing = await db.get(Filing, filing_id)
+    if filing is None:
+        raise ApiError(status_code=404, code="filing_not_found", message="No filing exists with this ID.")
+
+    brief = (
+        await db.execute(select(Brief).where(Brief.filing_id == filing_id))
+    ).scalar_one_or_none()
+    if brief is None:
+        raise ApiError(
+            status_code=404, code="brief_not_found", message="No brief exists yet for this filing."
+        )
+
+    effective_persona = "cco" if key.role == ApiKeyRole.EXECUTIVE else persona
+
+    summary_by_persona = {
+        None: brief.executive_brief,
+        "cco": brief.cco_summary,
+        "analyst": brief.analyst_summary,
+        "engineer": brief.engineer_summary,
+    }
+    return PersonaBriefResponse(
+        persona=effective_persona or "executive",
+        summary=summary_by_persona[effective_persona],
+    )

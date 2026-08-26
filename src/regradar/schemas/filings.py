@@ -81,3 +81,8 @@ class SearchResponse(BaseModel):
     answer: str | None
     sources: list[SearchSource]
     degraded: bool = False
+
+
+class PersonaBriefResponse(BaseModel):
+    persona: str
+    summary: str
