@@ -84,7 +84,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             # plain dicts (verified) — so this uses attribute access and
             # model_dump(), never dict-subscript access.
             extraction_result = result["extraction"]
-            retrieved_chunks = result["retrieved_chunks"] or []
+            retrieved_chunks = result.get("retrieved_chunks") or []
             # Distinct filing_ids, order preserved — this is the only place
             # AGENT-06's retrieval results are ever persisted; PipelineState
             # itself only lives for the duration of one pipeline run.
