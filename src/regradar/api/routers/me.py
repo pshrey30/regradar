@@ -1,12 +1,10 @@
 """GET /v1/me — session/role resolution for the future dashboard's app-load call.
 
-`organization_id` is always null: no organization/tenant concept exists
-anywhere in this schema yet (confirmed — SEC-05 would add it, deferred;
-same real gap AGENT-10 and API-02 already found and left for that ticket).
-This route works identically for a direct API key today and, once FE-02's
-SSO session resolves to an API key behind the scenes, for a session cookie
-too — it only ever reads the resolved `AuthenticatedKey`, never the header
-itself.
+`organization_id` returns the caller's real organization (SEC-05) — every
+key belongs to exactly one organization now. This route works identically
+for a direct API key today and, once FE-02's SSO session resolves to an
+API key behind the scenes, for a session cookie too — it only ever reads
+the resolved `AuthenticatedKey`, never the header itself.
 """
 
 from fastapi import APIRouter, Depends
@@ -20,4 +18,4 @@ router = APIRouter()
 
 @router.get("/v1/me", response_model=MeResponse)
 async def get_me(key: AuthenticatedKey = Depends(enforce_rate_limit)) -> MeResponse:
-    return MeResponse(role=key.role, organization_id=None, display_name=key.owner_label)
+    return MeResponse(role=key.role, organization_id=str(key.organization_id), display_name=key.owner_label)

@@ -7,6 +7,7 @@ from regradar.models.delivery import Delivery
 from regradar.models.eval_run import EvalRun
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
+from regradar.models.organization import Organization
 from regradar.models.source_config import SourceConfig
 from regradar.models.webhook import Webhook
 
@@ -18,6 +19,7 @@ __all__ = [
     "Extraction",
     "Filing",
     "FilingChunk",
+    "Organization",
     "SourceConfig",
     "Webhook",
 ]

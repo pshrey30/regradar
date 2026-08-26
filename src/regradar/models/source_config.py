@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ARRAY, Boolean, Integer, Text
+from sqlalchemy import ARRAY, Boolean, ForeignKey, Integer, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -17,6 +17,9 @@ class SourceConfig(Base):
     __tablename__ = "source_configs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+    )
     source: Mapped[FilingSource] = mapped_column(
         SAEnum(FilingSource, name="filing_source", values_callable=pg_enum_values), nullable=False
     )

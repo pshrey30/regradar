@@ -68,5 +68,7 @@ async def get_authenticated_db(
     queries — setting them anywhere else (e.g. on get_current_key's own
     internal auth-lookup session) has no effect on this session.
     """
-    await set_rls_context(db, role=key.role.value, api_key_id=str(key.id))
+    await set_rls_context(
+        db, role=key.role.value, api_key_id=str(key.id), organization_id=str(key.organization_id)
+    )
     return db

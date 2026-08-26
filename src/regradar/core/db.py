@@ -47,19 +47,30 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-async def set_rls_context(db: AsyncSession, *, role: str, api_key_id: str | None = None) -> None:
+async def set_rls_context(
+    db: AsyncSession,
+    *,
+    role: str,
+    api_key_id: str | None = None,
+    organization_id: str | None = None,
+) -> None:
     """Tag the given session's next transaction with the caller's identity,
-    read by SEC-01's RLS policies via `current_setting('app.current_role', ...)`.
+    read by SEC-01/SEC-05's RLS policies via `current_setting('app.current_*', ...)`.
 
     Must run on the exact same AsyncSession that will execute the caller's
     real queries — `SET LOCAL`/`set_config(..., true)` are transaction-
     scoped, so setting this on a different pooled connection has no effect
     on the one that actually runs the query. `set_config` (not `SET LOCAL`)
     is used so the role/id can be bound as real query parameters rather than
-    string-interpolated into SQL.
+    string-interpolated into SQL. `organization_id` is optional — `service`
+    (workers/CLI) never sets it, since it bypasses org-scoping entirely.
     """
     await db.execute(text("SELECT set_config('app.current_role', :role, true)"), {"role": role})
     await db.execute(
         text("SELECT set_config('app.current_api_key_id', :key_id, true)"),
         {"key_id": api_key_id or ""},
+    )
+    await db.execute(
+        text("SELECT set_config('app.current_organization_id', :org_id, true)"),
+        {"org_id": organization_id or ""},
     )

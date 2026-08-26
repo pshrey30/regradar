@@ -22,6 +22,7 @@ _INVALID_KEY_ERROR = ApiError(
 
 class AuthenticatedKey(BaseModel):
     id: uuid.UUID
+    organization_id: uuid.UUID
     role: ApiKeyRole
     owner_label: str
     rate_limit_per_minute: int
@@ -64,6 +65,7 @@ async def get_current_key(authorization: str = Header(default="")) -> Authentica
 
         return AuthenticatedKey(
             id=row.id,
+            organization_id=row.organization_id,
             role=row.role,
             owner_label=row.owner_label,
             rate_limit_per_minute=row.rate_limit_per_minute,
