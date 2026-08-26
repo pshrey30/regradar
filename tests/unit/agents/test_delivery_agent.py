@@ -59,6 +59,7 @@ def _make_state(risk_level: RiskLevel = RiskLevel.HIGH) -> PipelineState:
 def _make_filing(filing_id: uuid.UUID) -> MagicMock:
     filing = MagicMock(spec=Filing)
     filing.id = filing_id
+    filing.organization_id = uuid.uuid4()
     filing.entity_name = "Acme Corp"
     filing.filing_type = "10-K"
     filing.filing_url = "https://example.com/filing"
@@ -231,7 +232,30 @@ async def test_deliver_node_sends_to_matching_active_webhook(
     added = db.add.call_args_list[0].args[0]
     assert added.channel == DeliveryChannel.WEBHOOK
     assert added.webhook_id == webhook.id
+    assert added.organization_id == filing.organization_id
     assert f"webhook:{webhook.id}=sent" in result.delivery_status
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_scopes_webhook_query_to_filings_own_organization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-05 real bug: `service` bypasses RLS org-scoping (it needs
+    cross-org write access), so deliver_node's own webhook query must
+    filter by organization_id explicitly — otherwise a filing would fan
+    out to every organization's registered webhooks, not just its own."""
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    state = _make_state(risk_level=RiskLevel.HIGH)
+    filing = _make_filing(state.filing_id)
+    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+
+    await deliver_node(state, _config(db))
+
+    webhooks_call = db.execute.call_args_list[1]
+    compiled = str(webhooks_call.args[0].compile(compile_kwargs={"literal_binds": True}))
+    # literal_binds renders a UUID without dashes — compare the hex form.
+    assert filing.organization_id.hex in compiled
 
 
 @pytest.mark.asyncio
