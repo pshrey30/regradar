@@ -35,9 +35,12 @@ def _create_api_key(
     useful for API-03's live verification, where a low limit (e.g. 3) lets a
     real 429 be triggered in a handful of requests instead of 60+.
     """
+    from sqlalchemy import select
+
     from regradar.core.api_keys import generate_api_key, hash_api_key
     from regradar.models.api_key import ApiKey
     from regradar.models.enums import ApiKeyRole
+    from regradar.models.organization import Organization
 
     try:
         role_enum = ApiKeyRole(role)
@@ -54,7 +57,14 @@ def _create_api_key(
         session_factory = get_session_factory()
         async with session_factory() as db:
             await set_rls_context(db, role="service")
+            # SEC-05: this CLI has no organization-management surface by
+            # design (out of scope for this ticket) — new keys always
+            # belong to the single, first-created organization.
+            org_id = (
+                await db.execute(select(Organization.id).order_by(Organization.created_at.asc()).limit(1))
+            ).scalar_one()
             key = ApiKey(
+                organization_id=org_id,
                 key_hash=hash_api_key(plaintext_key),
                 owner_label=owner_label,
                 role=role_enum,

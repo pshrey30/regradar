@@ -12,20 +12,25 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.ingestion.types import NewFiling
-from regradar.models.enums import FilingSource, FilingStatus
+from regradar.models.enums import FilingStatus
 from regradar.models.filing import Filing
+from regradar.models.source_config import SourceConfig
 
 
 async def insert_new_filing(
-    db: AsyncSession, source: FilingSource, candidate: NewFiling
+    db: AsyncSession, source_config: SourceConfig, candidate: NewFiling
 ) -> Filing | None:
     """Insert one new Filing row. Returns the row (with a real id) on
     success, or None if another poller already inserted this
     source_document_id first (IntegrityError race) — the unique
     constraint is the real guarantee; this is just how a connector finds
-    out it lost that race."""
+    out it lost that race.
+
+    The filing inherits organization_id from the source_config that
+    discovered it (SEC-05) — the connector-level org boundary."""
     filing = Filing(
-        source=source,
+        organization_id=source_config.organization_id,
+        source=source_config.source,
         source_document_id=candidate.source_document_id,
         entity_name=candidate.entity_name,
         filing_type=candidate.filing_type,

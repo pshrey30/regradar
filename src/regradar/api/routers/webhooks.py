@@ -49,6 +49,7 @@ async def create_webhook(
     # built right after db.add() below reflects real values, not None.
     webhook = Webhook(
         id=uuid.uuid4(),
+        organization_id=key.organization_id,
         api_key_id=key.id,
         url=body.url,
         hmac_secret=hmac_secret,

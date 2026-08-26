@@ -257,7 +257,7 @@ async def poll_edgar(source_config: SourceConfig, db: AsyncSession) -> list[NewF
     for candidate in candidates:
         if candidate.source_document_id in existing_ids:
             continue
-        filing = await insert_new_filing(db, FilingSource.SEC, candidate)
+        filing = await insert_new_filing(db, source_config, candidate)
         if filing is None:
             continue
         inserted.append(candidate)

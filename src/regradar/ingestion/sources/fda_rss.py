@@ -139,7 +139,7 @@ async def poll_fda_rss(source_config: SourceConfig, db: AsyncSession) -> list[Ne
     for candidate in candidates:
         if candidate.source_document_id in existing_ids:
             continue
-        filing = await insert_new_filing(db, FilingSource.FDA, candidate)
+        filing = await insert_new_filing(db, source_config, candidate)
         if filing is None:
             continue
         inserted.append(candidate)

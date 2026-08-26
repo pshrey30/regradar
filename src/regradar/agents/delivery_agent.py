@@ -81,6 +81,7 @@ def _webhook_matches(
 async def _record_delivery(
     db: Any,
     filing_id: Any,
+    organization_id: Any,
     channel: DeliveryChannel,
     recipient: str,
     result: DeliveryResult,
@@ -88,6 +89,7 @@ async def _record_delivery(
 ) -> None:
     db.add(
         Delivery(
+            organization_id=organization_id,
             filing_id=filing_id,
             channel=channel,
             webhook_id=webhook_id,
@@ -141,7 +143,9 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
                 # and every attempt still gets a Delivery row per this ticket's acceptance criteria
                 logger.warning("Slack delivery raised for filing %s: %s", state.filing_id, exc)
                 result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
-            await _record_delivery(db, filing.id, DeliveryChannel.SLACK, "slack:default", result)
+            await _record_delivery(
+                db, filing.id, filing.organization_id, DeliveryChannel.SLACK, "slack:default", result
+            )
             if result.status == DeliveryStatus.SENT:
                 any_sent = True
             statuses.append(f"slack={result.status.value}")
@@ -163,7 +167,9 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
             except Exception as exc:  # noqa: BLE001 — see Slack's comment above
                 logger.warning("Email delivery raised for filing %s: %s", state.filing_id, exc)
                 result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
-            await _record_delivery(db, filing.id, DeliveryChannel.EMAIL, recipient, result)
+            await _record_delivery(
+                db, filing.id, filing.organization_id, DeliveryChannel.EMAIL, recipient, result
+            )
             if result.status == DeliveryStatus.SENT:
                 any_sent = True
             statuses.append(f"email={result.status.value}")
@@ -171,7 +177,15 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
             statuses.append("email=not_configured")
 
     # --- Webhooks ---
-    webhooks_result = await db.execute(select(Webhook).where(Webhook.is_active.is_(True)))
+    # SEC-05: `service` bypasses RLS org-scoping entirely (it needs
+    # cross-org write access), so this read must filter to the filing's
+    # own organization explicitly — without this, a filing would fan out
+    # to every organization's webhooks, not just its own.
+    webhooks_result = await db.execute(
+        select(Webhook).where(
+            Webhook.is_active.is_(True), Webhook.organization_id == filing.organization_id
+        )
+    )
     for webhook in webhooks_result.scalars().all():
         if (DeliveryChannel.WEBHOOK, webhook.id) in already_sent:
             continue
@@ -200,7 +214,13 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
             logger.warning("Webhook delivery raised for filing %s: %s", state.filing_id, exc)
             result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
         await _record_delivery(
-            db, filing.id, DeliveryChannel.WEBHOOK, webhook.url, result, webhook_id=webhook.id
+            db,
+            filing.id,
+            filing.organization_id,
+            DeliveryChannel.WEBHOOK,
+            webhook.url,
+            result,
+            webhook_id=webhook.id,
         )
         if result.status == DeliveryStatus.SENT:
             any_sent = True

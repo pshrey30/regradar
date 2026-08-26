@@ -204,7 +204,7 @@ async def poll_finra(
     for candidate in candidates:
         if candidate.source_document_id in existing_ids:
             continue
-        filing = await insert_new_filing(db, FilingSource.FINRA, candidate)
+        filing = await insert_new_filing(db, source_config, candidate)
         if filing is None:
             continue
         inserted.append(candidate)

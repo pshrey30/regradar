@@ -53,6 +53,7 @@ async def update_source_config(
                 # apply at flush, not at construction — set explicitly so the
                 # response built right after this reflects real values.
                 row = SourceConfig(
+                    organization_id=key.organization_id,
                     source=source,
                     domains=body.domains,
                     is_active=True,
