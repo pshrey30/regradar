@@ -50,7 +50,15 @@ async def update_source_config(
         row = rows.get(source)
         if source in requested:
             if row is None:
-                row = SourceConfig(source=source, domains=body.domains, is_active=True)
+                # SQLAlchemy's column defaults (poll_interval_seconds, id) only
+                # apply at flush, not at construction — set explicitly so the
+                # response built right after this reflects real values.
+                row = SourceConfig(
+                    source=source,
+                    domains=body.domains,
+                    is_active=True,
+                    poll_interval_seconds=300,
+                )
                 db.add(row)
                 rows[source] = row
             else:
