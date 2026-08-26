@@ -19,7 +19,7 @@ avg_cost_per_filing_usd have no documented numeric target anywhere in the
 ticket list, so their target is null rather than an invented number.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -82,6 +82,14 @@ async def get_metrics(
             code="forbidden",
             message="Only the Admin and Eng Lead roles can view eval metrics.",
         )
+
+    # A naive datetime is otherwise silently reinterpreted by asyncpg in the
+    # server's local timezone against EvalRun.created_at's TIMESTAMP(timezone=True)
+    # column — the same bug API-04 fixed once for Filing.published_at.
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+    if until is not None and until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
 
     if since is None and until is None:
         stmt = select(EvalRun).order_by(EvalRun.created_at.desc()).limit(1)

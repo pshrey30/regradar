@@ -102,6 +102,22 @@ def test_search_without_auth_header_returns_401():
     assert response.status_code == 401
 
 
+@pytest.mark.parametrize("bad_top_k", [-1, 0, 21])
+def test_search_returns_422_for_top_k_out_of_bounds(
+    monkeypatch: pytest.MonkeyPatch, bad_top_k: int
+):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
+    _mock_retrieval_db(monkeypatch, filing_rows=[])
+
+    response = TestClient(create_app()).post(
+        "/v1/filings/search",
+        json={"query": "anything", "top_k": bad_top_k},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_search_returns_structured_empty_result_when_no_matches(
     monkeypatch: pytest.MonkeyPatch,
 ):

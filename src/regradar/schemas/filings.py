@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from regradar.models.enums import FilingDomain, FilingStatus, RiskLevel
 
@@ -68,7 +68,7 @@ class FilingDetailResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1, le=20)
 
 
 class SearchSource(BaseModel):

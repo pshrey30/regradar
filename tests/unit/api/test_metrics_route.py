@@ -161,6 +161,27 @@ def test_metrics_with_date_range_returns_list(monkeypatch: pytest.MonkeyPatch):
     assert len(body) == 2
 
 
+def test_metrics_naive_since_is_normalized_to_utc_not_server_local_time(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A naive `since` (no timezone offset in the query string) must be treated
+    as UTC, not silently reinterpreted in the server's local timezone by
+    asyncpg's encoder — the same class of bug API-04 fixed for Filing.published_at.
+    """
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_eval_runs_db_list(monkeypatch, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/metrics",
+        params={"since": "2026-01-01T00:00:00"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    for call in mock_db.execute.call_args_list:
+        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "2026-01-01 00:00:00+00" in compiled
+
+
 def test_metrics_with_date_range_returns_empty_list_not_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
