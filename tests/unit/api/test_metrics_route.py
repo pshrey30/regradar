@@ -17,6 +17,7 @@ from regradar.models.enums import ApiKeyRole, EvalRunType
 def _authenticated_key_row(role: ApiKeyRole):
     row = MagicMock()
     row.id = uuid.uuid4()
+    row.organization_id = uuid.uuid4()
     row.role = role
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 1000
@@ -177,9 +178,9 @@ def test_metrics_naive_since_is_normalized_to_utc_not_server_local_time(
         headers={"Authorization": "Bearer rr_test-key"},
     )
 
-    # First two calls are get_authenticated_db's set_config() calls (SEC-01);
-    # the route's own real query is the third.
-    for call in mock_db.execute.call_args_list[2:]:
+    # First three calls are get_authenticated_db's set_config() calls
+    # (SEC-01/SEC-05); the route's own real query comes after.
+    for call in mock_db.execute.call_args_list[3:]:
         compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
         assert "2026-01-01 00:00:00+00" in compiled
 

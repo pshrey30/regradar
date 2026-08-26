@@ -17,6 +17,7 @@ from regradar.models.source_config import SourceConfig
 def _authenticated_key_row(role: ApiKeyRole):
     row = MagicMock()
     row.id = uuid.uuid4()
+    row.organization_id = uuid.uuid4()
     row.role = role
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 1000

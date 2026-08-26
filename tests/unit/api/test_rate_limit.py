@@ -14,6 +14,7 @@ from regradar.models.enums import ApiKeyRole
 def _make_key(rate_limit_per_minute: int = 5) -> AuthenticatedKey:
     return AuthenticatedKey(
         id=uuid4(),
+        organization_id=uuid4(),
         role=ApiKeyRole.ANALYST,
         owner_label="test-owner",
         rate_limit_per_minute=rate_limit_per_minute,

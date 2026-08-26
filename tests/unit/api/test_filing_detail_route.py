@@ -17,6 +17,7 @@ from regradar.models.enums import ApiKeyRole, FilingDomain, FilingStatus, RiskLe
 def _authenticated_key_row(role: ApiKeyRole):
     row = MagicMock()
     row.id = uuid.uuid4()
+    row.organization_id = uuid.uuid4()
     row.role = role
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 1000
@@ -110,7 +111,7 @@ def _mock_detail_db(
 
     # SEC-01's get_authenticated_db issues two set_config() calls on this
     # same session before the route body runs.
-    execute_results = [MagicMock(), MagicMock(), brief_result, extraction_result]
+    execute_results = [MagicMock(), MagicMock(), MagicMock(), brief_result, extraction_result]
     if extraction is not None and extraction.similar_filing_ids:
         similar_result = MagicMock()
         similar_scalars = MagicMock()

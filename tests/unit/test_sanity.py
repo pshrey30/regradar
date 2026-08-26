@@ -17,6 +17,7 @@ def test_all_models_register_on_base_metadata() -> None:
         "extractions",
         "filing_chunks",
         "filings",
+        "organizations",
         "source_configs",
         "webhooks",
     }

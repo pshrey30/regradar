@@ -17,6 +17,7 @@ from regradar.models.enums import ApiKeyRole, FilingDomain, FilingStatus, RiskLe
 def _authenticated_key_row(role: ApiKeyRole):
     row = MagicMock()
     row.id = uuid.uuid4()
+    row.organization_id = uuid.uuid4()
     row.role = role
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 1000
@@ -57,7 +58,9 @@ def _mock_db(monkeypatch: pytest.MonkeyPatch, *, total: int, rows: list[tuple]):
     # SEC-01's get_authenticated_db issues two set_config() calls on this
     # same session before the route body runs — MagicMock() placeholders for
     # those, then the route's own call order: COUNT query, then the page query.
-    mock_db.execute = AsyncMock(side_effect=[MagicMock(), MagicMock(), count_result, page_result])
+    mock_db.execute = AsyncMock(
+        side_effect=[MagicMock(), MagicMock(), MagicMock(), count_result, page_result]
+    )
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -68,9 +71,9 @@ def _mock_db(monkeypatch: pytest.MonkeyPatch, *, total: int, rows: list[tuple]):
 
 
 def _real_query_calls(mock_db):
-    """mock_db.execute's calls after get_authenticated_db's two leading
+    """mock_db.execute's calls after get_authenticated_db's three leading
     set_config() calls — the route's own actual queries, in order."""
-    return mock_db.execute.call_args_list[2:]
+    return mock_db.execute.call_args_list[3:]
 
 
 def _mock_auth_and_rate_limit(monkeypatch: pytest.MonkeyPatch, *, role: ApiKeyRole):

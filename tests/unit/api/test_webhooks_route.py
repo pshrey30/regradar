@@ -17,6 +17,7 @@ from regradar.models.enums import ApiKeyRole
 def _authenticated_key_row(role: ApiKeyRole, *, key_id: uuid.UUID | None = None):
     row = MagicMock()
     row.id = key_id or uuid.uuid4()
+    row.organization_id = uuid.uuid4()
     row.role = role
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 1000

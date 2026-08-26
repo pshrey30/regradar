@@ -48,6 +48,7 @@ def test_whoami_without_header_returns_401():
 def test_whoami_with_valid_key_returns_role_and_owner(monkeypatch: pytest.MonkeyPatch):
     row = MagicMock()
     row.id = uuid4()
+    row.organization_id = uuid4()
     row.role = ApiKeyRole.ENG_LEAD
     row.owner_label = "test-integrator"
     row.rate_limit_per_minute = 60
@@ -66,6 +67,7 @@ def test_whoami_with_valid_key_returns_role_and_owner(monkeypatch: pytest.Monkey
 def test_whoami_returns_429_when_rate_limit_exceeded(monkeypatch: pytest.MonkeyPatch):
     row = MagicMock()
     row.id = uuid4()
+    row.organization_id = uuid4()
     row.role = ApiKeyRole.ANALYST
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 5

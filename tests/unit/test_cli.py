@@ -1,5 +1,6 @@
 """Tests for the create-api-key CLI command."""
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -7,11 +8,19 @@ import pytest
 from regradar import cli as cli_module
 from regradar.models.enums import ApiKeyRole
 
+_DEFAULT_ORG_ID = uuid.uuid4()
+
 
 def _patch_db(monkeypatch: pytest.MonkeyPatch):
     mock_db = AsyncMock()
     mock_db.add = MagicMock()
     mock_db.commit = AsyncMock()
+
+    # SEC-05: _create_api_key looks up the single default organization's id
+    # via db.execute(select(...)).scalar_one() before inserting.
+    org_lookup_result = MagicMock()
+    org_lookup_result.scalar_one = MagicMock(return_value=_DEFAULT_ORG_ID)
+    mock_db.execute = AsyncMock(return_value=org_lookup_result)
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -31,6 +40,7 @@ def test_create_api_key_inserts_row_with_correct_role(monkeypatch, capsys):
     assert inserted.owner_label == "test-owner"
     assert inserted.role == ApiKeyRole.ADMIN
     assert inserted.is_active is True
+    assert inserted.organization_id == _DEFAULT_ORG_ID
     mock_db.commit.assert_awaited_once()
 
 

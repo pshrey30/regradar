@@ -13,6 +13,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test")
 os.environ.setdefault("HUGGINGFACE_API_TOKEN", "test")
 os.environ.setdefault("SEC_EDGAR_USER_AGENT", "RegRadar/1.0 (test@example.com)")
 
+import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,6 +23,13 @@ from sqlalchemy.exc import IntegrityError
 from regradar.ingestion.sources._common import insert_new_filing
 from regradar.ingestion.types import NewFiling
 from regradar.models.enums import FilingSource
+
+
+def _make_source_config() -> MagicMock:
+    source_config = MagicMock()
+    source_config.source = FilingSource.SEC
+    source_config.organization_id = uuid.uuid4()
+    return source_config
 
 
 def _make_candidate() -> NewFiling:
@@ -55,10 +63,12 @@ async def test_insert_new_filing_returns_filing_on_success() -> None:
     db.add = MagicMock()
     db.commit = AsyncMock()
 
-    result = await insert_new_filing(db, FilingSource.SEC, _make_candidate())
+    source_config = _make_source_config()
+    result = await insert_new_filing(db, source_config, _make_candidate())
 
     assert result is not None
     assert result.source == FilingSource.SEC
+    assert result.organization_id == source_config.organization_id
     assert result.source_document_id == "0000320193-25-000079"
     assert result.entity_name == "Apple Inc."
     db.add.assert_called_once()
@@ -81,6 +91,6 @@ async def test_insert_new_filing_returns_none_on_integrity_error() -> None:
     db.begin_nested = MagicMock(side_effect=_raise_nested)
     db.add = MagicMock()
 
-    result = await insert_new_filing(db, FilingSource.SEC, _make_candidate())
+    result = await insert_new_filing(db, _make_source_config(), _make_candidate())
 
     assert result is None

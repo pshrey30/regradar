@@ -12,9 +12,10 @@ from regradar.api.middleware import rate_limit as rate_limit_module
 from regradar.models.enums import ApiKeyRole
 
 
-def _authenticated_key_row(role: ApiKeyRole, owner_label: str):
+def _authenticated_key_row(role: ApiKeyRole, owner_label: str, organization_id: uuid.UUID):
     row = MagicMock()
     row.id = uuid.uuid4()
+    row.organization_id = organization_id
     row.role = role
     row.owner_label = owner_label
     row.rate_limit_per_minute = 1000
@@ -22,8 +23,14 @@ def _authenticated_key_row(role: ApiKeyRole, owner_label: str):
     return row
 
 
-def _mock_auth_and_rate_limit(monkeypatch: pytest.MonkeyPatch, *, role: ApiKeyRole, owner_label: str):
-    row = _authenticated_key_row(role, owner_label)
+def _mock_auth_and_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    role: ApiKeyRole,
+    owner_label: str,
+    organization_id: uuid.UUID,
+):
+    row = _authenticated_key_row(role, owner_label, organization_id)
 
     mock_auth_db = AsyncMock()
     result = MagicMock()
@@ -61,7 +68,8 @@ def test_me_without_auth_header_returns_401():
 def test_me_returns_role_and_display_name_for_every_role(
     monkeypatch: pytest.MonkeyPatch, role: ApiKeyRole
 ):
-    _mock_auth_and_rate_limit(monkeypatch, role=role, owner_label="acme-corp-key")
+    org_id = uuid.uuid4()
+    _mock_auth_and_rate_limit(monkeypatch, role=role, owner_label="acme-corp-key", organization_id=org_id)
 
     response = TestClient(create_app()).get(
         "/v1/me", headers={"Authorization": "Bearer rr_test-key"}
@@ -71,4 +79,4 @@ def test_me_returns_role_and_display_name_for_every_role(
     body = response.json()
     assert body["role"] == role.value
     assert body["display_name"] == "acme-corp-key"
-    assert body["organization_id"] is None
+    assert body["organization_id"] == str(org_id)

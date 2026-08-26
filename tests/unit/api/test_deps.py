@@ -13,6 +13,7 @@ from regradar.models.enums import ApiKeyRole
 def _mock_row(*, is_active: bool = True, role: ApiKeyRole = ApiKeyRole.ADMIN):
     row = MagicMock()
     row.id = uuid4()
+    row.organization_id = uuid4()
     row.role = role
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 60
