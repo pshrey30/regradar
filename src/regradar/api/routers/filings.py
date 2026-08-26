@@ -10,10 +10,12 @@ satisfies by construction: it never includes extraction data for any
 role).
 """
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
+from openai import APIConnectionError, InternalServerError, RateLimitError
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,13 +23,32 @@ from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
 from regradar.api.middleware.rate_limit import enforce_rate_limit
 from regradar.core.db import get_db
+from regradar.llm_routing.tiered_router import build_client, select_model
 from regradar.models.brief import Brief
 from regradar.models.enums import ApiKeyRole, FilingDomain, FilingStatus, RiskLevel
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
-from regradar.schemas.filings import FilingListItem, FilingListResponse
+from regradar.rag.retriever import retrieve_similar_filings
+from regradar.schemas.filings import (
+    FilingListItem,
+    FilingListResponse,
+    SearchRequest,
+    SearchResponse,
+    SearchSource,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_SEARCH_EXCERPT_MAX_CHARS = 300
+
+_SEARCH_SYSTEM_PROMPT = (
+    "You are a regulatory compliance research assistant. Answer the user's question using "
+    "ONLY the numbered excerpts provided below — never invent facts not present in them. "
+    "If the excerpts don't contain enough information to answer, say so plainly. Keep the "
+    "answer concise and factual."
+)
 
 _EXTRACTION_VISIBLE_ROLES = {
     ApiKeyRole.ADMIN,
@@ -188,3 +209,73 @@ async def get_filing(
         )
 
     return response
+
+
+def _synthesize_answer(query: str, sources: list[SearchSource]) -> str | None:
+    """One LLM call synthesizing an answer from already-retrieved excerpts.
+
+    Returns None (never raises) on any provider failure — callers fall back
+    to keyword/vector-only results with a degraded=True flag rather than
+    failing the whole request.
+    """
+    context = "\n\n".join(
+        f"[{i}] ({source.entity_name}): {source.excerpt}" for i, source in enumerate(sources, 1)
+    )
+    choice = select_model(risk_level=None, task="analysis")
+    client = build_client(choice)
+    try:
+        response = client.chat.completions.create(
+            model=choice.model,
+            messages=[
+                {"role": "system", "content": _SEARCH_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Excerpts:\n{context}\n\nQuestion: {query}"},
+            ],
+        )
+    except (APIConnectionError, RateLimitError, InternalServerError):
+        logger.warning("Search answer-generation call failed; degrading to sources only.")
+        return None
+    return response.choices[0].message.content
+
+
+@router.post("/v1/filings/search", response_model=SearchResponse)
+async def search_filings(
+    body: SearchRequest,
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_db),
+) -> SearchResponse:
+    """Natural-language search across past filings (Legal Counsel persona's
+    "what has the SEC said about X" use case). Not available to Executive.
+    """
+    if key.role == ApiKeyRole.EXECUTIVE:
+        raise ApiError(
+            status_code=403,
+            code="forbidden",
+            message="The executive role cannot use natural-language search.",
+        )
+
+    # No "current filing" to exclude — pass a random UUID that can never
+    # match a real filing_id, so retrieve_similar_filings' exclusion filter
+    # is effectively a no-op here.
+    chunks = await retrieve_similar_filings(
+        query_text=body.query, exclude_filing_id=uuid.uuid4(), db=db, top_k=body.top_k
+    )
+    if not chunks:
+        return SearchResponse(answer="No relevant filings were found for this query.", sources=[])
+
+    filing_ids = {chunk.filing_id for chunk in chunks}
+    filing_rows = (
+        await db.execute(select(Filing).where(Filing.id.in_(filing_ids)))
+    ).scalars().all()
+    entity_names = {filing.id: filing.entity_name for filing in filing_rows}
+
+    sources = [
+        SearchSource(
+            filing_id=chunk.filing_id,
+            excerpt=chunk.chunk_text[:_SEARCH_EXCERPT_MAX_CHARS],
+            entity_name=entity_names.get(chunk.filing_id, "Unknown"),
+        )
+        for chunk in chunks
+    ]
+
+    answer = _synthesize_answer(body.query, sources)
+    return SearchResponse(answer=answer, sources=sources, degraded=answer is None)

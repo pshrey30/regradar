@@ -64,3 +64,20 @@ class FilingDetailResponse(BaseModel):
     status: FilingStatus
     brief: BriefSummary | None
     similar_filings: list[SimilarFiling]
+
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+
+class SearchSource(BaseModel):
+    filing_id: uuid.UUID
+    excerpt: str
+    entity_name: str
+
+
+class SearchResponse(BaseModel):
+    answer: str | None
+    sources: list[SearchSource]
+    degraded: bool = False
