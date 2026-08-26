@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from regradar.api.errors import ApiError
 from regradar.core.api_keys import hash_api_key
-from regradar.core.db import get_session_factory
+from regradar.core.db import get_session_factory, set_rls_context
 from regradar.models.api_key import ApiKey
 from regradar.models.enums import ApiKeyRole
 
@@ -46,6 +46,13 @@ async def get_current_key(authorization: str = Header(default="")) -> Authentica
 
     session_factory = get_session_factory()
     async with session_factory() as db:
+        # SEC-01: this lookup is what *resolves* the caller's role, so it
+        # can't itself be gated by a real role — tagged with a distinct
+        # sentinel ('auth_lookup') the api_keys_update_last_used RLS policy
+        # checks for explicitly, rather than relying on the GUC ever being
+        # NULL (it isn't, reliably, on a pooled connection — see the
+        # migration's _AUTHENTICATED comment).
+        await set_rls_context(db, role="auth_lookup")
         result = await db.execute(select(ApiKey).where(ApiKey.key_hash == key_hash))
         row = result.scalar_one_or_none()
 

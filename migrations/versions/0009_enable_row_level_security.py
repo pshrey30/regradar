@@ -58,7 +58,20 @@ _ALL_TABLES = [
     "api_keys",
 ]
 
-_AUTHENTICATED = "current_setting('app.current_role', true) IS NOT NULL"
+# Membership checks against a known-role allowlist, never NULL-checks: a
+# transaction-local set_config('x', val, true) does NOT revert to NULL once
+# its transaction ends on a pooled connection that has ever touched that
+# GUC before — it reverts to '' (empty string), a real, observed Postgres
+# behavior for custom run-time parameters, verified directly against this
+# project's actual connection pool before writing these policies this way.
+# `current_setting(..., true) IS NOT NULL` would therefore treat ANY
+# previously-used pooled connection as "authenticated" even when the
+# current transaction never set a role at all — silently defeating
+# deny-by-default. An explicit allowlist is correct regardless of what a
+# touched-but-unset GUC reverts to, since neither NULL nor '' is ever a
+# member of it.
+_KNOWN_ROLES = "('admin', 'analyst', 'executive', 'legal_counsel', 'eng_lead', 'service')"
+_AUTHENTICATED = f"current_setting('app.current_role', true) IN {_KNOWN_ROLES}"
 _IS_SERVICE = "current_setting('app.current_role', true) = 'service'"
 _IS_ADMIN = "current_setting('app.current_role', true) = 'admin'"
 _IS_EXECUTIVE = "current_setting('app.current_role', true) = 'executive'"
@@ -185,11 +198,14 @@ def upgrade() -> None:
         f"USING {admin_or_service} WITH CHECK {admin_or_service}"
     )
     # The auth lookup itself (deps.get_current_key) also updates
-    # last_used_at on every successful request, on a connection that has
-    # not yet set app.current_role — allow that one specific, narrow write.
+    # last_used_at on every successful request, before it has resolved a
+    # real role — deps.py explicitly tags that one session with the
+    # 'auth_lookup' sentinel (never a real api-key role, never 'service')
+    # so this narrow write can be permitted without relying on NULL-vs-''
+    # GUC-reset semantics (see _AUTHENTICATED's comment above).
     op.execute(
         "CREATE POLICY api_keys_update_last_used ON api_keys FOR UPDATE "
-        "USING (current_setting('app.current_role', true) IS NULL)"
+        "USING (current_setting('app.current_role', true) = 'auth_lookup')"
     )
 
 
