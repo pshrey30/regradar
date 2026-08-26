@@ -10,6 +10,7 @@ confirms that ID's existence to a caller who shouldn't see it.
 
 import secrets
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select
@@ -44,16 +45,21 @@ async def create_webhook(
         raise ApiError(status_code=422, code="invalid_webhook_url", message=str(exc)) from exc
 
     hmac_secret = _generate_hmac_secret()
+    # SQLAlchemy's column defaults (id, is_active, created_at) only apply at
+    # flush, not at construction — set them explicitly so the response
+    # built right after db.add() below reflects real values, not None.
     webhook = Webhook(
+        id=uuid.uuid4(),
         api_key_id=key.id,
         url=body.url,
         hmac_secret=hmac_secret,
+        is_active=True,
         filter_domain=body.filter_domain,
         filter_min_risk=body.filter_min_risk,
+        created_at=datetime.now(UTC),
     )
     db.add(webhook)
     await db.commit()
-    await db.refresh(webhook)
 
     return WebhookCreateResponse(
         id=webhook.id,
