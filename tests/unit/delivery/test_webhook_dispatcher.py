@@ -118,7 +118,9 @@ async def test_send_webhook_alert_signs_body_with_given_secret(
     call_kwargs = mock_client.post.call_args.kwargs
     sent_body = call_kwargs["content"]
     sent_headers = call_kwargs["headers"]
-    expected_signature = hmac.new(secret.encode(), sent_body, hashlib.sha256).hexdigest()
+    sent_timestamp = sent_headers["X-RegRadar-Timestamp"]
+    signed_payload = f"{sent_timestamp}.".encode() + sent_body
+    expected_signature = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
     assert sent_headers["X-RegRadar-Signature"] == f"sha256={expected_signature}"
     assert json.loads(sent_body) == payload
 
