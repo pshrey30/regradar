@@ -28,6 +28,10 @@ from regradar.core.db import get_session_factory, set_rls_context
 
 pytestmark = pytest.mark.asyncio
 
+# Matches migration 0010's seeded default organization — every row in this
+# test file that isn't explicitly testing cross-org isolation belongs here.
+_DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
+
 
 @pytest.fixture(autouse=True)
 def _load_real_env_for_settings(monkeypatch: pytest.MonkeyPatch):
@@ -83,14 +87,14 @@ async def _seed_filing() -> uuid.UUID:
         await db.execute(
             text(
                 """
-                INSERT INTO filings (id, source, source_document_id, entity_name,
+                INSERT INTO filings (id, organization_id, source, source_document_id, entity_name,
                     filing_type, filing_url, status, published_at, ingested_at,
                     created_at, updated_at)
-                VALUES (:id, 'SEC', :doc_id, 'RLS Test Corp', '10-K',
+                VALUES (:id, :org_id, 'SEC', :doc_id, 'RLS Test Corp', '10-K',
                     'http://example.com/rls-test', 'ingested', now(), now(), now(), now())
                 """
             ),
-            {"id": str(filing_id), "doc_id": f"rls-test-{filing_id}"},
+            {"id": str(filing_id), "org_id": _DEFAULT_ORG_ID, "doc_id": f"rls-test-{filing_id}"},
         )
         await db.commit()
     await engine.dispose()
@@ -124,14 +128,14 @@ async def test_analyst_cannot_insert_filings(rls_session: AsyncSession):
         await rls_session.execute(
             text(
                 """
-                INSERT INTO filings (id, source, source_document_id, entity_name,
+                INSERT INTO filings (id, organization_id, source, source_document_id, entity_name,
                     filing_type, filing_url, status, published_at, ingested_at,
                     created_at, updated_at)
-                VALUES (gen_random_uuid(), 'SEC', :doc_id, 'Should Fail Corp',
+                VALUES (gen_random_uuid(), :org_id, 'SEC', :doc_id, 'Should Fail Corp',
                     '10-K', 'http://example.com', 'ingested', now(), now(), now(), now())
                 """
             ),
-            {"doc_id": f"analyst-insert-attempt-{uuid.uuid4()}"},
+            {"org_id": _DEFAULT_ORG_ID, "doc_id": f"analyst-insert-attempt-{uuid.uuid4()}"},
         )
 
 
@@ -141,14 +145,14 @@ async def test_service_can_insert_and_select_filings(rls_session: AsyncSession):
     await rls_session.execute(
         text(
             """
-            INSERT INTO filings (id, source, source_document_id, entity_name,
+            INSERT INTO filings (id, organization_id, source, source_document_id, entity_name,
                 filing_type, filing_url, status, published_at, ingested_at,
                 created_at, updated_at)
-            VALUES (gen_random_uuid(), 'SEC', :doc_id, 'Service Corp',
+            VALUES (gen_random_uuid(), :org_id, 'SEC', :doc_id, 'Service Corp',
                 '10-K', 'http://example.com', 'ingested', now(), now(), now(), now())
             """
         ),
-        {"doc_id": doc_id},
+        {"org_id": _DEFAULT_ORG_ID, "doc_id": doc_id},
     )
     result = await rls_session.execute(
         text("SELECT count(*) FROM filings WHERE source_document_id = :doc_id"), {"doc_id": doc_id}
@@ -159,7 +163,7 @@ async def test_service_can_insert_and_select_filings(rls_session: AsyncSession):
 async def test_analyst_can_select_seeded_filing(
     rls_session: AsyncSession, seeded_filing_id: uuid.UUID
 ):
-    await set_rls_context(rls_session, role="analyst")
+    await set_rls_context(rls_session, role="analyst", organization_id=_DEFAULT_ORG_ID)
     result = await rls_session.execute(
         text("SELECT count(*) FROM filings WHERE id = :id"), {"id": str(seeded_filing_id)}
     )
@@ -190,13 +194,13 @@ async def test_executive_cannot_select_extractions_that_exist(
         await seed_db.commit()
     await engine.dispose()
 
-    await set_rls_context(rls_session, role="executive")
+    await set_rls_context(rls_session, role="executive", organization_id=_DEFAULT_ORG_ID)
     result = await rls_session.execute(
         text("SELECT count(*) FROM extractions WHERE filing_id = :id"), {"id": str(seeded_filing_id)}
     )
     assert result.scalar_one() == 0
 
-    await set_rls_context(rls_session, role="analyst")
+    await set_rls_context(rls_session, role="analyst", organization_id=_DEFAULT_ORG_ID)
     result = await rls_session.execute(
         text("SELECT count(*) FROM extractions WHERE filing_id = :id"), {"id": str(seeded_filing_id)}
     )
@@ -216,20 +220,24 @@ async def test_key_cannot_see_another_keys_webhook(rls_session: AsyncSession):
         await seed_db.execute(
             text(
                 """
-                INSERT INTO api_keys (id, key_hash, owner_label, role, is_active, rate_limit_per_minute, created_at)
-                VALUES (:id, :key_hash, 'rls-test-owner', 'analyst', true, 60, now())
+                INSERT INTO api_keys (id, organization_id, key_hash, owner_label, role, is_active, rate_limit_per_minute, created_at)
+                VALUES (:id, :org_id, :key_hash, 'rls-test-owner', 'analyst', true, 60, now())
                 """
             ),
-            {"id": str(owner_key_id), "key_hash": f"rls-test-hash-{owner_key_id}"},
+            {
+                "id": str(owner_key_id),
+                "org_id": _DEFAULT_ORG_ID,
+                "key_hash": f"rls-test-hash-{owner_key_id}",
+            },
         )
         await seed_db.execute(
             text(
                 """
-                INSERT INTO webhooks (id, api_key_id, url, hmac_secret, is_active, created_at)
-                VALUES (gen_random_uuid(), :key_id, 'https://example.com/hook', 'secret', true, now())
+                INSERT INTO webhooks (id, organization_id, api_key_id, url, hmac_secret, is_active, created_at)
+                VALUES (gen_random_uuid(), :org_id, :key_id, 'https://example.com/hook', 'secret', true, now())
                 """
             ),
-            {"key_id": str(owner_key_id)},
+            {"org_id": _DEFAULT_ORG_ID, "key_id": str(owner_key_id)},
         )
         await seed_db.commit()
     await engine.dispose()
@@ -246,7 +254,9 @@ async def test_key_cannot_see_another_keys_webhook(rls_session: AsyncSession):
     )
     assert result.scalar_one() == 1
 
-    await set_rls_context(rls_session, role="admin", api_key_id=str(other_key_id))
+    await set_rls_context(
+        rls_session, role="admin", api_key_id=str(other_key_id), organization_id=_DEFAULT_ORG_ID
+    )
     result = await rls_session.execute(
         text("SELECT count(*) FROM webhooks WHERE api_key_id = :id"), {"id": str(owner_key_id)}
     )
@@ -272,11 +282,11 @@ async def test_analyst_cannot_insert_webhook_for_another_key(rls_session: AsyncS
         await rls_session.execute(
             text(
                 """
-                INSERT INTO webhooks (id, api_key_id, url, hmac_secret, is_active, created_at)
-                VALUES (gen_random_uuid(), :other_key_id, 'https://example.com/hook', 'secret', true, now())
+                INSERT INTO webhooks (id, organization_id, api_key_id, url, hmac_secret, is_active, created_at)
+                VALUES (gen_random_uuid(), :org_id, :other_key_id, 'https://example.com/hook', 'secret', true, now())
                 """
             ),
-            {"other_key_id": str(uuid.uuid4())},
+            {"org_id": _DEFAULT_ORG_ID, "other_key_id": str(uuid.uuid4())},
         )
 
 
@@ -297,13 +307,14 @@ async def test_analyst_cannot_update_source_configs(rls_session: AsyncSession):
     await set_rls_context(rls_session, role="service")
     await rls_session.execute(
         text(
-            "INSERT INTO source_configs (id, source, domains, is_active, poll_interval_seconds) "
-            "VALUES (gen_random_uuid(), 'FINRA', '{}', true, 300) "
+            "INSERT INTO source_configs (id, organization_id, source, domains, is_active, poll_interval_seconds) "
+            "VALUES (gen_random_uuid(), :org_id, 'FINRA', '{}', true, 300) "
             "ON CONFLICT DO NOTHING"
-        )
+        ),
+        {"org_id": _DEFAULT_ORG_ID},
     )
 
-    await set_rls_context(rls_session, role="analyst")
+    await set_rls_context(rls_session, role="analyst", organization_id=_DEFAULT_ORG_ID)
     result = await rls_session.execute(
         text("UPDATE source_configs SET is_active = false WHERE source = 'FINRA'")
     )
@@ -316,10 +327,11 @@ async def test_service_can_update_source_configs_last_polled_at(rls_session: Asy
     await set_rls_context(rls_session, role="service")
     await rls_session.execute(
         text(
-            "INSERT INTO source_configs (id, source, domains, is_active, poll_interval_seconds) "
-            "VALUES (gen_random_uuid(), 'FDA', '{}', true, 300) "
+            "INSERT INTO source_configs (id, organization_id, source, domains, is_active, poll_interval_seconds) "
+            "VALUES (gen_random_uuid(), :org_id, 'FDA', '{}', true, 300) "
             "ON CONFLICT DO NOTHING"
-        )
+        ),
+        {"org_id": _DEFAULT_ORG_ID},
     )
     result = await rls_session.execute(
         text("UPDATE source_configs SET last_polled_at = now() WHERE source = 'FDA'")

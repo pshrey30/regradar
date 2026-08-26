@@ -14,6 +14,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from dotenv import dotenv_values
@@ -28,6 +29,9 @@ from regradar.models.enums import FilingSource
 from regradar.models.filing import Filing
 
 pytestmark = pytest.mark.asyncio
+
+# Matches migration 0010's seeded default organization.
+_DEFAULT_ORG_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 @pytest.fixture(autouse=True)
@@ -55,9 +59,10 @@ async def _insert_racing(source_document_id: str) -> Filing | None:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with session_factory() as db:
         await set_rls_context(db, role="service")
+        source_config = SimpleNamespace(source=FilingSource.SEC, organization_id=_DEFAULT_ORG_ID)
         result = await insert_new_filing(
             db,
-            FilingSource.SEC,
+            source_config,
             NewFiling(
                 source_document_id=source_document_id,
                 entity_name="Race Test Corp",
