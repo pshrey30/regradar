@@ -29,6 +29,16 @@ class Settings(BaseSettings):
 
     # ── Database (Supabase Postgres + pgvector) ─────────────
     database_url: SecretStr = Field(alias="DATABASE_URL")
+    # SEC-01: the app/workers/CLI must connect as a non-superuser role for
+    # RLS to have any effect (Postgres superusers bypass RLS unconditionally
+    # — FORCE ROW LEVEL SECURITY has no power over that). DATABASE_URL stays
+    # the migration-runner's connection (needs owner/superuser privileges
+    # for DDL); APP_DATABASE_URL is the restricted `regradar_app` role every
+    # other connection uses. Falls back to DATABASE_URL when unset so
+    # environments that haven't provisioned the restricted role yet
+    # (existing CI/test config) don't break — but RLS is then unenforced
+    # for the app, same as before this ticket.
+    app_database_url: SecretStr | None = Field(default=None, alias="APP_DATABASE_URL")
     database_pool_size: int = Field(default=10, alias="DATABASE_POOL_SIZE")
     supabase_url: str | None = Field(default=None, alias="SUPABASE_URL")
     supabase_service_role_key: SecretStr | None = Field(
@@ -120,6 +130,11 @@ class Settings(BaseSettings):
     fly_app_name_api: str = Field(default="regradar-api", alias="FLY_APP_NAME_API")
     fly_app_name_worker: str = Field(default="regradar-worker", alias="FLY_APP_NAME_WORKER")
     port: int = Field(default=8000, alias="PORT")
+
+    @property
+    def effective_app_database_url(self) -> SecretStr:
+        """The connection string every non-migration DB access should use."""
+        return self.app_database_url or self.database_url
 
     @field_validator("sec_edgar_user_agent")
     @classmethod
