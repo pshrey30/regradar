@@ -21,8 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
-from regradar.api.middleware.rate_limit import enforce_rate_limit
-from regradar.core.db import get_db
+from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.llm_routing.tiered_router import build_client, select_model
 from regradar.models.brief import Brief
 from regradar.models.enums import ApiKeyRole, FilingDomain, FilingStatus, RiskLevel
@@ -99,7 +98,7 @@ def _build_filters(
 @router.get("/v1/filings", response_model=FilingListResponse)
 async def list_filings(
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
     domain: FilingDomain | None = Query(default=None),
     risk: RiskLevel | None = Query(default=None),
     since: datetime | None = Query(default=None),
@@ -146,7 +145,7 @@ async def list_filings(
 async def get_filing(
     filing_id: uuid.UUID,
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
 ) -> dict:
     """Full single-filing record: brief, extraction, risk score, similar filings.
 
@@ -242,7 +241,7 @@ def _synthesize_answer(query: str, sources: list[SearchSource]) -> str | None:
 async def search_filings(
     body: SearchRequest,
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
 ) -> SearchResponse:
     """Natural-language search across past filings (Legal Counsel persona's
     "what has the SEC said about X" use case). Not available to Executive.
@@ -290,7 +289,7 @@ async def get_filing_brief(
     filing_id: uuid.UUID,
     persona: str | None = Query(default=None),
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
 ) -> PersonaBriefResponse:
     """One persona's brief text. Omitting persona defaults to the
     executive brief. An Executive-role caller is always served the cco

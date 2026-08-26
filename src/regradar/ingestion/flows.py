@@ -33,7 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.core.config import get_settings
-from regradar.core.db import get_session_factory
+from regradar.core.db import get_session_factory, set_rls_context
 from regradar.ingestion.sources.fda_rss import poll_fda_rss
 from regradar.ingestion.sources.finra_feed import poll_finra
 from regradar.ingestion.sources.sec_edgar import poll_edgar
@@ -66,6 +66,7 @@ async def poll_source(source_config_id: uuid.UUID, source: FilingSource) -> list
     connector = _CONNECTORS[source]
     session_factory = get_session_factory()
     async with session_factory() as db:
+        await set_rls_context(db, role="service")
         source_config = await db.get(SourceConfig, source_config_id)
         if source_config is None:
             logger.warning("source_config %s no longer exists, skipping", source_config_id)
@@ -94,6 +95,7 @@ async def poll_all_sources() -> dict[str, int]:
     """
     session_factory = get_session_factory()
     async with session_factory() as db:
+        await set_rls_context(db, role="service")
         active_configs = await _get_active_source_configs(db)
 
     if not active_configs:

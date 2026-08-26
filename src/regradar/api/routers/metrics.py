@@ -27,8 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
-from regradar.api.middleware.rate_limit import enforce_rate_limit
-from regradar.core.db import get_db
+from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.models.enums import ApiKeyRole
 from regradar.models.eval_run import EvalRun
 from regradar.schemas.metrics import MetricsResponse, MetricValue
@@ -74,7 +73,7 @@ async def get_metrics(
     since: datetime | None = Query(default=None),
     until: datetime | None = Query(default=None),
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
 ) -> MetricsResponse | list[MetricsResponse]:
     if key.role not in (ApiKeyRole.ADMIN, ApiKeyRole.ENG_LEAD):
         raise ApiError(

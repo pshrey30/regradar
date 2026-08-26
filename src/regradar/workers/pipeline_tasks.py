@@ -15,7 +15,7 @@ from celery.utils.log import get_task_logger
 
 from regradar.agents.graph import build_graph
 from regradar.agents.state import PipelineState
-from regradar.core.db import get_session_factory
+from regradar.core.db import get_session_factory, set_rls_context
 from regradar.models.brief import Brief
 from regradar.models.enums import FilingStatus
 from regradar.models.extraction import Extraction
@@ -31,6 +31,7 @@ logger = get_task_logger(__name__)
 async def _mark_filing_failed(filing_id: str, error_message: str) -> None:
     session_factory = get_session_factory()
     async with session_factory() as db:
+        await set_rls_context(db, role="service")
         filing = await db.get(Filing, uuid.UUID(filing_id))
         if filing is None:
             logger.warning("Filing %s not found — nothing to mark failed", filing_id)
@@ -43,6 +44,7 @@ async def _mark_filing_failed(filing_id: str, error_message: str) -> None:
 async def _run_pipeline_for_filing(filing_id: str) -> None:
     session_factory = get_session_factory()
     async with session_factory() as db:
+        await set_rls_context(db, role="service")
         filing = await db.get(Filing, uuid.UUID(filing_id))
         if filing is None:
             logger.warning("Filing %s not found — skipping pipeline run", filing_id)

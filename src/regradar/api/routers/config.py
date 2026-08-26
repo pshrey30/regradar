@@ -12,8 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
-from regradar.api.middleware.rate_limit import enforce_rate_limit
-from regradar.core.db import get_db
+from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.models.enums import ApiKeyRole, FilingSource
 from regradar.models.source_config import SourceConfig
 from regradar.schemas.config import SourceConfigResponse, SourceConfigUpdateRequest
@@ -25,7 +24,7 @@ router = APIRouter()
 async def update_source_config(
     body: SourceConfigUpdateRequest,
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
 ) -> list[SourceConfigResponse]:
     if key.role != ApiKeyRole.ADMIN:
         raise ApiError(

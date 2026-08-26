@@ -10,9 +10,11 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.api.deps import AuthenticatedKey, get_current_key
 from regradar.api.errors import ApiError
+from regradar.core.db import get_db, set_rls_context
 from regradar.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
@@ -51,3 +53,20 @@ async def enforce_rate_limit(
         )
 
     return key
+
+
+async def get_authenticated_db(
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_db),
+) -> AsyncSession:
+    """The RLS-aware replacement for `Depends(get_db)` — every route that
+    touches the database must use this instead, never bare `get_db`.
+
+    SEC-01's RLS policies read the caller's role/key from Postgres session
+    GUCs (app.current_role, app.current_api_key_id), which only take effect
+    on the exact connection/transaction that runs the caller's real
+    queries — setting them anywhere else (e.g. on get_current_key's own
+    internal auth-lookup session) has no effect on this session.
+    """
+    await set_rls_context(db, role=key.role.value, api_key_id=str(key.id))
+    return db

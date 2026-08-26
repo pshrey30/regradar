@@ -3,7 +3,7 @@
 import argparse
 import asyncio
 
-from regradar.core.db import get_session_factory
+from regradar.core.db import get_session_factory, set_rls_context
 
 _DEFAULT_RATE_LIMIT_PER_MINUTE = 60  # matches ApiKey.rate_limit_per_minute's DB default (FOUND-02)
 
@@ -53,6 +53,7 @@ def _create_api_key(
     async def _insert() -> None:
         session_factory = get_session_factory()
         async with session_factory() as db:
+            await set_rls_context(db, role="service")
             key = ApiKey(
                 key_hash=hash_api_key(plaintext_key),
                 owner_label=owner_label,

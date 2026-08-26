@@ -18,8 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
-from regradar.api.middleware.rate_limit import enforce_rate_limit
-from regradar.core.db import get_db
+from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.delivery.webhook_dispatcher import WebhookValidationError, validate_webhook_url
 from regradar.models.enums import ApiKeyRole
 from regradar.models.webhook import Webhook
@@ -37,7 +36,7 @@ def _generate_hmac_secret() -> str:
 async def create_webhook(
     body: WebhookCreateRequest,
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
 ) -> WebhookCreateResponse:
     try:
         validate_webhook_url(body.url)
@@ -75,7 +74,7 @@ async def create_webhook(
 @router.get("/v1/webhooks", response_model=list[WebhookResponse])
 async def list_webhooks(
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
 ) -> list[WebhookResponse]:
     stmt = select(Webhook)
     if key.role != ApiKeyRole.ADMIN:
@@ -99,7 +98,7 @@ async def list_webhooks(
 async def delete_webhook(
     webhook_id: uuid.UUID,
     key: AuthenticatedKey = Depends(enforce_rate_limit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_authenticated_db),
 ) -> Response:
     webhook = await db.get(Webhook, webhook_id)
     if webhook is None or (webhook.api_key_id != key.id and key.role != ApiKeyRole.ADMIN):
