@@ -1,12 +1,22 @@
 """Signs and dispatches filing-alert payloads to customer-registered webhooks.
 
-Minimal SSRF-prevention validator only — checks the literal function this
-ticket's own spec calls for (reject private/loopback/link-local/reserved
-resolved addresses, require https outside development). Full
-registration-time validation, DNS-rebinding re-checks on every retry, and
-replay protection (a timestamp signed alongside the body, per SEC-03) are
-separate tickets (SEC-02, SEC-03, API-08) not yet built — this only covers
-the dispatch-time half AGENT-10 needs.
+`validate_webhook_url` closes SEC-02 in full: it rejects any URL resolving
+(via real DNS resolution, not string inspection) to a private/loopback/
+link-local/reserved address — including cloud metadata endpoints like
+169.254.169.254 — and requires https outside `ENV=development`. It runs at
+both real call sites SEC-02 requires: registration time (API-08's
+`POST /v1/webhooks`, which 422s on failure) and dispatch time (here, on
+every `send_webhook_alert` call, so a DNS change between registration and
+delivery is still caught). One residual, documented risk SEC-02's own
+acceptance criteria doesn't require closing: this validates via its own
+`socket.getaddrinfo` call, then `httpx.AsyncClient` performs its own
+independent DNS resolution to actually connect — a sub-second-TTL
+DNS-rebinding attacker could theoretically change the record between those
+two calls. Closing that fully would mean connecting directly to the
+validated IP rather than re-resolving the hostname, which is real
+additional work beyond what this ticket asks for; noted here rather than
+silently assumed away. Replay protection (SEC-03) is a separate, still
+unbuilt ticket.
 """
 
 import hashlib
