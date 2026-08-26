@@ -10,6 +10,7 @@ from regradar.api.errors import register_error_handlers
 from regradar.api.middleware.request_id import RequestIdFilter, RequestIdMiddleware
 from regradar.api.routers.config import router as config_router
 from regradar.api.routers.filings import router as filings_router
+from regradar.api.routers.me import router as me_router
 from regradar.api.routers.metrics import router as metrics_router
 from regradar.api.routers.webhooks import router as webhooks_router
 from regradar.api.routers.whoami import router as whoami_router
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     app.include_router(webhooks_router)
     app.include_router(metrics_router)
     app.include_router(config_router)
+    app.include_router(me_router)
 
     @app.get("/health")
     async def health(response: Response) -> dict[str, str]:
