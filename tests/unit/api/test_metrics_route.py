@@ -177,7 +177,9 @@ def test_metrics_naive_since_is_normalized_to_utc_not_server_local_time(
         headers={"Authorization": "Bearer rr_test-key"},
     )
 
-    for call in mock_db.execute.call_args_list:
+    # First two calls are get_authenticated_db's set_config() calls (SEC-01);
+    # the route's own real query is the third.
+    for call in mock_db.execute.call_args_list[2:]:
         compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
         assert "2026-01-01 00:00:00+00" in compiled
 

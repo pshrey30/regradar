@@ -108,7 +108,9 @@ def _mock_detail_db(
     extraction_result = MagicMock()
     extraction_result.scalar_one_or_none = MagicMock(return_value=extraction)
 
-    execute_results = [brief_result, extraction_result]
+    # SEC-01's get_authenticated_db issues two set_config() calls on this
+    # same session before the route body runs.
+    execute_results = [MagicMock(), MagicMock(), brief_result, extraction_result]
     if extraction is not None and extraction.similar_filing_ids:
         similar_result = MagicMock()
         similar_scalars = MagicMock()

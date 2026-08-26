@@ -54,9 +54,10 @@ def _mock_db(monkeypatch: pytest.MonkeyPatch, *, total: int, rows: list[tuple]):
     page_result = MagicMock()
     page_result.all = MagicMock(return_value=rows)
 
-    # First execute() call is the COUNT query, second is the page query — matches
-    # the route's own call order (count first, then the paginated SELECT).
-    mock_db.execute = AsyncMock(side_effect=[count_result, page_result])
+    # SEC-01's get_authenticated_db issues two set_config() calls on this
+    # same session before the route body runs — MagicMock() placeholders for
+    # those, then the route's own call order: COUNT query, then the page query.
+    mock_db.execute = AsyncMock(side_effect=[MagicMock(), MagicMock(), count_result, page_result])
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -64,6 +65,12 @@ def _mock_db(monkeypatch: pytest.MonkeyPatch, *, total: int, rows: list[tuple]):
     monkeypatch.setattr(db_module, "get_session_factory", lambda: mock_session_factory)
 
     return mock_db
+
+
+def _real_query_calls(mock_db):
+    """mock_db.execute's calls after get_authenticated_db's two leading
+    set_config() calls — the route's own actual queries, in order."""
+    return mock_db.execute.call_args_list[2:]
 
 
 def _mock_auth_and_rate_limit(monkeypatch: pytest.MonkeyPatch, *, role: ApiKeyRole):
@@ -149,7 +156,7 @@ def test_list_filings_domain_filter_applies_to_query(monkeypatch: pytest.MonkeyP
     # not just the column name "domain", which is guaranteed present in the page
     # statement regardless (it's a selected column) and would pass even if the
     # WHERE-clause filter were accidentally dropped from the page query.
-    for call in mock_db.execute.call_args_list:
+    for call in _real_query_calls(mock_db):
         compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
         assert "'clinical'" in compiled
 
@@ -176,7 +183,7 @@ def test_executive_role_without_risk_param_only_sees_high_critical(monkeypatch: 
         "/v1/filings", headers={"Authorization": "Bearer rr_test-key"}
     )
 
-    count_stmt = mock_db.execute.call_args_list[0].args[0]
+    count_stmt = _real_query_calls(mock_db)[0].args[0]
     compiled = str(count_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "'high'" in compiled or "high" in compiled.lower()
     assert "'critical'" in compiled or "critical" in compiled.lower()
@@ -213,7 +220,7 @@ def test_non_executive_role_is_unaffected_by_executive_risk_restriction(
         headers={"Authorization": "Bearer rr_test-key"},
     )
 
-    count_stmt = mock_db.execute.call_args_list[0].args[0]
+    count_stmt = _real_query_calls(mock_db)[0].args[0]
     compiled = str(count_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "low" in compiled.lower()
 
@@ -245,7 +252,7 @@ def test_list_filings_since_filter_applies_to_query(monkeypatch: pytest.MonkeyPa
     # not just the string "published_at", which is guaranteed present in the
     # page statement regardless (it's the ORDER BY column) and would pass even
     # if the WHERE-clause filter were accidentally dropped from the page query.
-    for call in mock_db.execute.call_args_list:
+    for call in _real_query_calls(mock_db):
         compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
         assert "2026-01-01 00:00:00" in compiled
 
@@ -264,7 +271,7 @@ def test_list_filings_page_query_orders_by_published_at_then_id(
         "/v1/filings", headers={"Authorization": "Bearer rr_test-key"}
     )
 
-    page_stmt = mock_db.execute.call_args_list[1].args[0]
+    page_stmt = _real_query_calls(mock_db)[1].args[0]
     compiled = str(page_stmt.compile(compile_kwargs={"literal_binds": True}))
     order_by_clause = compiled.split("ORDER BY", 1)[1]
     assert "published_at" in order_by_clause
@@ -301,7 +308,7 @@ def test_naive_since_is_normalized_to_utc_not_server_local_time(
         headers={"Authorization": "Bearer rr_test-key"},
     )
 
-    for call in mock_db.execute.call_args_list:
+    for call in _real_query_calls(mock_db):
         compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
         assert "2026-01-01 00:00:00+00" in compiled
 
@@ -323,7 +330,7 @@ def test_list_filings_query_only_selects_complete_status_joined_to_briefs(
         "/v1/filings", headers={"Authorization": "Bearer rr_test-key"}
     )
 
-    count_stmt, page_stmt = (call.args[0] for call in mock_db.execute.call_args_list)
+    count_stmt, page_stmt = (call.args[0] for call in _real_query_calls(mock_db))
     count_compiled = str(count_stmt.compile(compile_kwargs={"literal_binds": True}))
     page_compiled = str(page_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "complete" in count_compiled.lower()
