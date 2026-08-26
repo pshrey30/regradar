@@ -84,6 +84,13 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             # plain dicts (verified) — so this uses attribute access and
             # model_dump(), never dict-subscript access.
             extraction_result = result["extraction"]
+            retrieved_chunks = result["retrieved_chunks"] or []
+            # Distinct filing_ids, order preserved — this is the only place
+            # AGENT-06's retrieval results are ever persisted; PipelineState
+            # itself only lives for the duration of one pipeline run.
+            similar_filing_ids = list(
+                dict.fromkeys(str(chunk.filing_id) for chunk in retrieved_chunks)
+            )
             db.add(
                 Extraction(
                     filing_id=filing.id,
@@ -95,6 +102,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
                     competitor_mentions=extraction_result.competitor_mentions,
                     model_used=extraction_result.model_used,
                     raw_model_response=extraction_result.model_dump(),
+                    similar_filing_ids=similar_filing_ids or None,
                 )
             )
             await db.commit()

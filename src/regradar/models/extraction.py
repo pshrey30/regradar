@@ -33,6 +33,7 @@ class Extraction(Base):
     competitor_mentions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     model_used: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_model_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    similar_filing_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     filing: Mapped["Filing"] = relationship(back_populates="extraction")
