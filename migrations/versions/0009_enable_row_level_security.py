@@ -94,7 +94,18 @@ def upgrade() -> None:
     # app_database_url); migrations keep running as the powerful role,
     # since DDL here needs owner/superuser privilege this new role won't
     # have. Idempotent — CREATE ROLE has no IF NOT EXISTS, so DO-block guard.
-    password = os.environ.get("APP_DB_ROLE_PASSWORD", "regradar_app")
+    #
+    # No hardcoded fallback: this role is the one every RLS policy in this
+    # migration binds to, so a guessable default password here would be a
+    # real credential exposed in source control, not a dev convenience.
+    password = os.environ.get("APP_DB_ROLE_PASSWORD")
+    if not password:
+        raise RuntimeError(
+            "APP_DB_ROLE_PASSWORD must be set before running this migration — it "
+            "becomes the password for the restricted 'regradar_app' Postgres role "
+            "that every RLS policy in this migration depends on. There is no safe "
+            "default to fall back to."
+        )
     op.execute(
         f"""
         DO $$
