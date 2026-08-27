@@ -1,4 +1,4 @@
-"""Live end-to-end test for EVAL-01's Ragas harness.
+"""Live end-to-end test for the EVAL-01/EVAL-02 harness.
 
 Marked `live` and excluded from default pytest runs (pyproject.toml's
 addopts) — run it explicitly with `pytest -m live` when you actually want
@@ -48,6 +48,7 @@ async def test_run_eval_writes_a_real_eval_runs_row_scored_by_a_real_llm():
     assert run.id is not None
     assert 0.0 <= run.ragas_faithfulness <= 1.0
     assert 0.0 <= run.ragas_context_recall <= 1.0
+    assert 0.0 <= run.rouge_l <= 1.0
     assert run.git_commit_sha is not None
 
     settings = get_settings()
@@ -60,6 +61,7 @@ async def test_run_eval_writes_a_real_eval_runs_row_scored_by_a_real_llm():
                 await db.execute(select(EvalRun).where(EvalRun.id == run.id))
             ).scalar_one()
             assert row.ragas_faithfulness == pytest.approx(run.ragas_faithfulness)
+            assert row.rouge_l == pytest.approx(run.rouge_l)
 
             # No fixture data should survive the run.
             leftover_filings = (

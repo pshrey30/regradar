@@ -81,8 +81,12 @@ def _create_api_key(
     print(f"Key (shown once, will not be shown again): {plaintext_key}")
 
 
+def _format_metric(value: float | None) -> str:
+    return f"{value:.3f}" if value is not None else "(not measured)"
+
+
 def _run_eval(*, run_type: str) -> None:
-    """Run EVAL-01's Ragas harness once and print a summary."""
+    """Run every built EVAL-* harness once and print a summary."""
     from regradar.evaluation.harness import run_eval
     from regradar.models.enums import EvalRunType
 
@@ -90,8 +94,9 @@ def _run_eval(*, run_type: str) -> None:
     run = asyncio.run(run_eval(run_type_enum))
 
     print(f"Eval run {run.id} ({run.run_type.value}): {'PASSED' if run.passed else 'FAILED'}")
-    print(f"  ragas_faithfulness:   {run.ragas_faithfulness:.3f}")
-    print(f"  ragas_context_recall: {run.ragas_context_recall:.3f}")
+    print(f"  ragas_faithfulness:   {_format_metric(run.ragas_faithfulness)}")
+    print(f"  ragas_context_recall: {_format_metric(run.ragas_context_recall)}")
+    print(f"  rouge_l:              {_format_metric(run.rouge_l)}")
 
 
 def main() -> None:

@@ -1,22 +1,40 @@
-"""EVAL-01 — the Ragas eval harness.
+"""EVAL-01/EVAL-02 — the eval harness.
 
-Seeds a small, self-contained fixture corpus (evaluation/dataset.py) into
+One `regradar run-eval` invocation runs whichever fixture eval sets are
+built so far and writes a single averaged `eval_runs` row with whatever it
+managed to measure — never multiple partial rows per run, so `GET
+/v1/metrics`' "latest row" always reflects everything currently measurable
+in one place, not just whichever harness ran most recently.
+
+EVAL-01 (ragas_faithfulness/ragas_context_recall): seeds a small,
+self-contained fixture corpus (evaluation/dataset.py) into
 `filings`/`filing_chunks` under the default organization, runs each fixture
 question through the *real* API-06 retrieval + answer-synthesis pipeline
 (rag.retriever.retrieve_similar_filings, rag.answer_synthesis.synthesize_answer
 — exactly what POST /v1/filings/search calls), scores each (question,
 retrieved context, generated answer, reference answer) tuple with real Ragas
-Faithfulness/ContextRecall metrics, averages them into one `eval_runs` row,
-and always rolls back its fixture inserts afterward (never committed at
-all) — a run never leaves synthetic filings visible to a real API caller.
+Faithfulness/ContextRecall metrics, and always rolls back its fixture
+inserts afterward (never committed at all) — a run never leaves synthetic
+filings visible to a real API caller. The judge LLM is the same
+local-Ollama-or-real-OpenAI choice every other LLM call in this project
+makes (llm_routing.tiered_router.select_model) — no new provider, no new
+credential, consistent with ADR-05.
 
-The judge LLM is the same local-Ollama-or-real-OpenAI choice every other
-LLM call in this project makes (llm_routing.tiered_router.select_model) —
-no new provider, no new credential, consistent with ADR-05.
+EVAL-02 (rouge_l): runs a small, hand-written extraction-shaped fixture set
+through the *real* Summarization Agent (agents.summarization_agent.
+summarize_node — exactly what the real pipeline calls) and scores each
+generated executive_brief against a reference via ROUGE-L
+(rouge_score.rouge_scorer, entirely local — no network fetch, unlike
+`evaluate.load("rouge")`). No DB writes of its own — summarize_node is pure.
 
-Only ragas_faithfulness/ragas_context_recall are populated here.
-rouge_l/extraction_f1/alert_precision/alert_recall/hallucination_rate/
-avg_cost_per_filing_usd/p99_latency_ms are EVAL-02/03/04/06's own scope,
+Each metric family scores independently: if one family's every case fails,
+its eval_runs column stays null (not silently coerced to 0) and the run
+still writes whatever the other family measured. Only raises RuntimeError
+if NOTHING was measured across every family — that's the one case where
+writing a row would be pointless.
+
+extraction_f1/alert_precision/alert_recall/hallucination_rate/
+avg_cost_per_filing_usd/p99_latency_ms are EVAL-03/04/06's own scope,
 deliberately left null (not zero — GET /v1/metrics distinguishes "not
 measured" from "measured as zero" via `MetricValue.value` being nullable).
 """
@@ -31,11 +49,20 @@ from pathlib import Path
 from openai import AsyncOpenAI
 from ragas.llms import llm_factory
 from ragas.metrics.collections import ContextRecall, Faithfulness
+from rouge_score import rouge_scorer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from regradar.agents.state import ExtractionResult, PipelineState
+from regradar.agents.summarization_agent import summarize_node
 from regradar.api.routers.metrics import METRIC_TARGETS
 from regradar.core.db import get_session_factory, set_rls_context
-from regradar.evaluation.dataset import EVAL_CASES, SEED_FILINGS, EvalCase
+from regradar.evaluation.dataset import (
+    SEARCH_EVAL_CASES,
+    SEED_FILINGS,
+    SUMMARIZATION_EVAL_CASES,
+    SearchEvalCase,
+    SummarizationEvalCase,
+)
 from regradar.llm_routing.tiered_router import select_model
 from regradar.models.chunk import FilingChunk
 from regradar.models.enums import EvalRunType, FilingStatus
@@ -58,7 +85,7 @@ _FIXTURE_SOURCE_DOCUMENT_PREFIX = "eval-01-fixture-"
 
 
 @dataclass
-class _CaseResult:
+class _SearchCaseResult:
     faithfulness: float
     context_recall: float
 
@@ -139,14 +166,14 @@ def _judge_llm():
     return llm_factory(choice.model, client=client)
 
 
-async def _score_case(
-    case: EvalCase,
+async def _score_search_case(
+    case: SearchEvalCase,
     *,
     db: AsyncSession,
     entity_names_by_filing_id: dict[uuid.UUID, str],
     faithfulness_metric: Faithfulness,
     context_recall_metric: ContextRecall,
-) -> _CaseResult | None:
+) -> _SearchCaseResult | None:
     chunks = await retrieve_similar_filings(
         query_text=case.question,
         exclude_filing_id=uuid.uuid4(),
@@ -178,20 +205,54 @@ async def _score_case(
     context_recall_result = await context_recall_metric.ascore(
         user_input=case.question, retrieved_contexts=retrieved_contexts, reference=case.reference
     )
-    return _CaseResult(
+    return _SearchCaseResult(
         faithfulness=faithfulness_result.value, context_recall=context_recall_result.value
     )
 
 
-async def run_eval(run_type: EvalRunType) -> EvalRun:
-    """Runs the full EVAL-01 harness once and persists one `eval_runs` row.
+def _score_summarization_case(case: SummarizationEvalCase) -> float | None:
+    """Runs the real summarize_node against one fixture case and scores its
+    generated executive_brief against the reference via ROUGE-L. Returns
+    None (never raises) if summarization itself failed — summarize_node's
+    own contract is to degrade to `briefs=None` on failure, never raise."""
+    state = PipelineState(
+        filing_id=uuid.uuid4(),
+        raw_text="",
+        domain=case.domain,
+        risk_level=case.risk_level,
+        extraction=ExtractionResult(
+            obligations=case.obligations,
+            deadlines=case.deadlines,
+            risk_flags=case.risk_flags,
+            affected_products=case.affected_products,
+            key_entities=case.key_entities,
+        ),
+    )
+    result_state = summarize_node(state)
+    if result_state.briefs is None:
+        logger.warning(
+            "Summarization eval case failed to produce a brief, skipping: entities=%r",
+            case.key_entities,
+        )
+        return None
 
-    Raises RuntimeError if every fixture case failed (retrieval or
-    synthesis) — writing a null/zero-scored row in that situation would be
-    indistinguishable from a real, very-low-quality result, which is worse
-    than a loud failure.
-    """
-    session_factory = get_session_factory()
+    scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
+    score = scorer.score(case.reference_executive_brief, result_state.briefs.executive_brief)
+    return score["rougeL"].fmeasure
+
+
+def _target(field: str) -> float:
+    """METRIC_TARGETS' entries for every metric this harness ever measures
+    are non-null by definition (unlike hallucination_rate/
+    avg_cost_per_filing_usd, which are genuinely None — see its own
+    definition in api/routers/metrics.py) — asserted, not silently
+    coerced, so a future edit there that nulls one out fails loud."""
+    target = METRIC_TARGETS[field]
+    assert target is not None, f"METRIC_TARGETS[{field!r}] must be non-null for a harness that measures it"
+    return target
+
+
+async def _run_search_eval(session_factory) -> list[_SearchCaseResult]:
     judge_llm = _judge_llm()
     faithfulness_metric = Faithfulness(llm=judge_llm)
     context_recall_metric = ContextRecall(llm=judge_llm)
@@ -200,11 +261,11 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         await set_rls_context(db, role="service")
         entity_names_by_filing_id = await _seed_fixture_corpus(db)
         try:
-            results = [
+            return [
                 result
-                for case in EVAL_CASES
+                for case in SEARCH_EVAL_CASES
                 if (
-                    result := await _score_case(
+                    result := await _score_search_case(
                         case,
                         db=db,
                         entity_names_by_filing_id=entity_names_by_filing_id,
@@ -220,32 +281,59 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
             # actually discards them, not a delete against committed data.
             await db.rollback()
 
-    if not results:
+
+async def run_eval(run_type: EvalRunType) -> EvalRun:
+    """Runs every fixture eval set built so far and persists one `eval_runs`
+    row with whatever it measured.
+
+    Each metric family (EVAL-01's ragas pair, EVAL-02's rouge_l) scores
+    independently — one family failing entirely leaves its column(s) null,
+    not zero, and doesn't stop the other family's column(s) from being
+    written. Raises RuntimeError only if NOTHING was measured across every
+    family — a completely empty row would be pointless to write, and most
+    likely means the local LLM provider is unreachable.
+    """
+    session_factory = get_session_factory()
+
+    search_results = await _run_search_eval(session_factory)
+    summarization_scores = [
+        score
+        for case in SUMMARIZATION_EVAL_CASES
+        if (score := _score_summarization_case(case)) is not None
+    ]
+
+    if not search_results and not summarization_scores:
         raise RuntimeError(
-            "Every eval case failed (empty retrieval or failed answer synthesis) — "
-            "no eval_runs row was written. Check that Ollama/the configured LLM "
-            "provider is reachable."
+            "Every eval case failed across every metric family — no eval_runs row was "
+            "written. Check that Ollama/the configured LLM provider is reachable."
         )
 
-    ragas_faithfulness = sum(r.faithfulness for r in results) / len(results)
-    ragas_context_recall = sum(r.context_recall for r in results) / len(results)
-    # METRIC_TARGETS' two ragas entries are always populated (unlike
-    # hallucination_rate/avg_cost_per_filing_usd, which are genuinely None —
-    # see its own definition in api/routers/metrics.py) — asserted, not
-    # silently coerced, so a future edit there that nulls one out fails loud.
-    faithfulness_target = METRIC_TARGETS["ragas_faithfulness"]
-    context_recall_target = METRIC_TARGETS["ragas_context_recall"]
-    assert faithfulness_target is not None
-    assert context_recall_target is not None
-    passed = ragas_faithfulness > faithfulness_target and ragas_context_recall > context_recall_target
+    measured: dict[str, float] = {}
+    if search_results:
+        measured["ragas_faithfulness"] = sum(r.faithfulness for r in search_results) / len(
+            search_results
+        )
+        measured["ragas_context_recall"] = sum(r.context_recall for r in search_results) / len(
+            search_results
+        )
+    else:
+        logger.warning("Every search eval case failed; ragas_faithfulness/context_recall stay null.")
+
+    if summarization_scores:
+        measured["rouge_l"] = sum(summarization_scores) / len(summarization_scores)
+    else:
+        logger.warning("Every summarization eval case failed; rouge_l stays null.")
+
+    passed = all(value > _target(field) for field, value in measured.items())
 
     run = EvalRun(
         id=uuid.uuid4(),
         run_type=run_type,
         prompt_version=PROMPT_VERSION,
         git_commit_sha=_current_git_commit_sha(),
-        ragas_faithfulness=ragas_faithfulness,
-        ragas_context_recall=ragas_context_recall,
+        ragas_faithfulness=measured.get("ragas_faithfulness"),
+        ragas_context_recall=measured.get("ragas_context_recall"),
+        rouge_l=measured.get("rouge_l"),
         passed=passed,
     )
     async with session_factory() as db:
@@ -254,11 +342,13 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         await db.commit()
 
     logger.info(
-        "EVAL-01 run complete: %d/%d cases scored, faithfulness=%.3f, context_recall=%.3f, passed=%s",
-        len(results),
-        len(EVAL_CASES),
-        ragas_faithfulness,
-        ragas_context_recall,
+        "Eval run complete: %d/%d search cases, %d/%d summarization cases scored, "
+        "measured=%s, passed=%s",
+        len(search_results),
+        len(SEARCH_EVAL_CASES),
+        len(summarization_scores),
+        len(SUMMARIZATION_EVAL_CASES),
+        measured,
         passed,
     )
     return run

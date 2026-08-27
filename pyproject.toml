@@ -50,6 +50,13 @@ eval = [
     # time (ImportError even when Vertex AI is never used) — pin to the
     # last version confirmed compatible.
     "langchain-community>=0.3.20,<0.4",
+    # EVAL-02: ROUGE-L scoring for the Summarization Agent's briefs. Used
+    # directly (rouge_score.rouge_scorer), not via HuggingFace's `evaluate`
+    # wrapper — `evaluate.load("rouge")` fetches a builder script from the
+    # HF Hub on first use (a real network dependency this project doesn't
+    # otherwise have for a $0-cost, fully-local eval run); `rouge_score`
+    # computes entirely locally with no fetch.
+    "rouge-score>=0.1",
 ]
 dev = [
     "pytest>=8.2",
@@ -58,7 +65,6 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "moto>=5.0",
-    "evaluate>=0.4",
 ]
 
 [project.scripts]

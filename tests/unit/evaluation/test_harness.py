@@ -1,8 +1,9 @@
-"""Unit tests for EVAL-01's harness control flow — retrieval/synthesis/ragas
-scoring and the fixture corpus seed/delete step are all mocked here; a real
-end-to-end run (real Postgres, real local Ollama) is verified separately,
-not by the automated unit suite (matches this project's established
-pattern for every other Ollama-dependent code path)."""
+"""Unit tests for the EVAL-01/EVAL-02 harness control flow — retrieval/
+synthesis/ragas scoring, summarize_node/ROUGE-L scoring, and the fixture
+corpus seed/rollback step are all mocked here; a real end-to-end run (real
+Postgres, real local Ollama) is verified separately, not by the automated
+unit suite (matches this project's established pattern for every other
+Ollama-dependent code path)."""
 
 import uuid
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ import pytest
 
 from regradar.agents.state import RetrievedChunk
 from regradar.evaluation import harness as harness_module
-from regradar.evaluation.dataset import EVAL_CASES
+from regradar.evaluation.dataset import SEARCH_EVAL_CASES, SUMMARIZATION_EVAL_CASES
 from regradar.models.enums import EvalRunType
 
 
@@ -51,6 +52,7 @@ def _patch_common(
     context_recall_score: float,
     chunks_per_case: list[RetrievedChunk] | None = None,
     synthesized_answer: str | None = "A synthesized answer.",
+    rouge_l_score: float | None = 0.9,
 ) -> None:
     monkeypatch.setattr(harness_module, "_seed_fixture_corpus", AsyncMock(return_value={}))
     monkeypatch.setattr(harness_module, "_judge_llm", lambda: object())
@@ -73,6 +75,9 @@ def _patch_common(
     monkeypatch.setattr(
         harness_module, "synthesize_answer", MagicMock(return_value=synthesized_answer)
     )
+    monkeypatch.setattr(
+        harness_module, "_score_summarization_case", MagicMock(return_value=rouge_l_score)
+    )
 
 
 @pytest.mark.asyncio
@@ -80,12 +85,15 @@ async def test_run_eval_writes_averaged_scores_and_passes_above_thresholds(
     monkeypatch: pytest.MonkeyPatch,
 ):
     mock_db = _patch_db(monkeypatch)
-    _patch_common(monkeypatch, faithfulness_score=0.95, context_recall_score=0.9)
+    _patch_common(
+        monkeypatch, faithfulness_score=0.95, context_recall_score=0.9, rouge_l_score=0.9
+    )
 
     run = await harness_module.run_eval(EvalRunType.MANUAL)
 
     assert run.ragas_faithfulness == pytest.approx(0.95)
     assert run.ragas_context_recall == pytest.approx(0.9)
+    assert run.rouge_l == pytest.approx(0.9)
     assert run.passed is True
     assert run.run_type == EvalRunType.MANUAL
     assert run.git_commit_sha == "abc1234"
@@ -102,7 +110,7 @@ async def test_run_eval_writes_averaged_scores_and_passes_above_thresholds(
 
 
 @pytest.mark.asyncio
-async def test_run_eval_fails_when_scores_are_below_documented_thresholds(
+async def test_run_eval_fails_when_ragas_scores_are_below_documented_thresholds(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _patch_db(monkeypatch)
@@ -114,9 +122,70 @@ async def test_run_eval_fails_when_scores_are_below_documented_thresholds(
 
 
 @pytest.mark.asyncio
-async def test_run_eval_raises_when_every_case_fails_to_retrieve(monkeypatch: pytest.MonkeyPatch):
+async def test_run_eval_fails_when_rouge_l_is_below_documented_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _patch_db(monkeypatch)
-    _patch_common(monkeypatch, faithfulness_score=0.95, context_recall_score=0.9, chunks_per_case=[])
+    _patch_common(
+        monkeypatch, faithfulness_score=0.95, context_recall_score=0.9, rouge_l_score=0.1
+    )
+
+    run = await harness_module.run_eval(EvalRunType.MANUAL)
+
+    assert run.passed is False
+
+
+@pytest.mark.asyncio
+async def test_run_eval_leaves_ragas_fields_null_when_every_search_case_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """One metric family failing entirely doesn't stop the other family's
+    column(s) from being measured and written."""
+    _patch_db(monkeypatch)
+    _patch_common(
+        monkeypatch,
+        faithfulness_score=0.95,
+        context_recall_score=0.9,
+        chunks_per_case=[],
+        rouge_l_score=0.9,
+    )
+
+    run = await harness_module.run_eval(EvalRunType.MANUAL)
+
+    assert run.ragas_faithfulness is None
+    assert run.ragas_context_recall is None
+    assert run.rouge_l == pytest.approx(0.9)
+    assert run.passed is True  # only the measured metric (rouge_l) needs to clear its threshold
+
+
+@pytest.mark.asyncio
+async def test_run_eval_leaves_rouge_l_null_when_every_summarization_case_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _patch_db(monkeypatch)
+    _patch_common(
+        monkeypatch, faithfulness_score=0.95, context_recall_score=0.9, rouge_l_score=None
+    )
+
+    run = await harness_module.run_eval(EvalRunType.MANUAL)
+
+    assert run.ragas_faithfulness == pytest.approx(0.95)
+    assert run.rouge_l is None
+    assert run.passed is True
+
+
+@pytest.mark.asyncio
+async def test_run_eval_raises_when_every_case_fails_across_every_metric_family(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _patch_db(monkeypatch)
+    _patch_common(
+        monkeypatch,
+        faithfulness_score=0.95,
+        context_recall_score=0.9,
+        chunks_per_case=[],
+        rouge_l_score=None,
+    )
 
     with pytest.raises(RuntimeError, match="Every eval case failed"):
         await harness_module.run_eval(EvalRunType.MANUAL)
@@ -127,7 +196,13 @@ async def test_run_eval_raises_when_every_case_fails_answer_synthesis(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _patch_db(monkeypatch)
-    _patch_common(monkeypatch, faithfulness_score=0.95, context_recall_score=0.9, synthesized_answer=None)
+    _patch_common(
+        monkeypatch,
+        faithfulness_score=0.95,
+        context_recall_score=0.9,
+        synthesized_answer=None,
+        rouge_l_score=None,
+    )
 
     with pytest.raises(RuntimeError, match="Every eval case failed"):
         await harness_module.run_eval(EvalRunType.MANUAL)
@@ -136,14 +211,15 @@ async def test_run_eval_raises_when_every_case_fails_answer_synthesis(
 @pytest.mark.asyncio
 async def test_run_eval_scores_every_fixture_case(monkeypatch: pytest.MonkeyPatch):
     """Each case gets its own real retrieve_similar_filings + synthesize_answer
-    call — not just the first one."""
+    / summarization scoring call — not just the first one."""
     _patch_db(monkeypatch)
     _patch_common(monkeypatch, faithfulness_score=0.95, context_recall_score=0.9)
 
     await harness_module.run_eval(EvalRunType.MANUAL)
 
-    assert harness_module.retrieve_similar_filings.await_count == len(EVAL_CASES)
-    assert harness_module.synthesize_answer.call_count == len(EVAL_CASES)
+    assert harness_module.retrieve_similar_filings.await_count == len(SEARCH_EVAL_CASES)
+    assert harness_module.synthesize_answer.call_count == len(SEARCH_EVAL_CASES)
+    assert harness_module._score_summarization_case.call_count == len(SUMMARIZATION_EVAL_CASES)
 
 
 def test_current_git_commit_sha_returns_none_on_subprocess_failure(monkeypatch: pytest.MonkeyPatch):
@@ -155,3 +231,38 @@ def test_current_git_commit_sha_returns_none_on_subprocess_failure(monkeypatch: 
     monkeypatch.setattr(harness_module.subprocess, "run", _raise)
 
     assert harness_module._current_git_commit_sha() is None
+
+
+def test_score_summarization_case_scores_a_real_rouge_l_against_the_generated_brief(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from regradar.agents.state import BriefSet
+    from regradar.evaluation.dataset import SUMMARIZATION_EVAL_CASES
+
+    case = SUMMARIZATION_EVAL_CASES[0]
+    fake_briefs = BriefSet(
+        executive_brief=case.reference_executive_brief,  # identical text -> perfect score
+        cco_summary="irrelevant",
+        analyst_summary="irrelevant",
+        engineer_summary="irrelevant",
+    )
+    monkeypatch.setattr(
+        harness_module,
+        "summarize_node",
+        lambda state: state.model_copy(update={"briefs": fake_briefs}),
+    )
+
+    score = harness_module._score_summarization_case(case)
+
+    assert score == pytest.approx(1.0)
+
+
+def test_score_summarization_case_returns_none_when_summarization_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from regradar.evaluation.dataset import SUMMARIZATION_EVAL_CASES
+
+    case = SUMMARIZATION_EVAL_CASES[0]
+    monkeypatch.setattr(harness_module, "summarize_node", lambda state: state)  # briefs stays None
+
+    assert harness_module._score_summarization_case(case) is None
