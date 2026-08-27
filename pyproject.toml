@@ -57,6 +57,10 @@ eval = [
     # otherwise have for a $0-cost, fully-local eval run); `rouge_score`
     # computes entirely locally with no fetch.
     "rouge-score>=0.1",
+    # EVAL-05: the `regradar push-prompts` CLI subcommand's runtime
+    # dependency — grouped with `eval` rather than a new extra, since both
+    # are niche CLI-only tools not needed for the API/worker to run.
+    "langsmith>=0.10",
 ]
 dev = [
     "pytest>=8.2",

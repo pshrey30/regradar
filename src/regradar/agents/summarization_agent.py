@@ -43,6 +43,10 @@ MAX_EXECUTIVE_BRIEF_SENTENCES = 5
 MIN_EXECUTIVE_BRIEF_SENTENCES = 3
 MAX_CCO_SUMMARY_WORDS = 50
 
+# Bumped whenever SUMMARIZATION_SYSTEM_PROMPT changes meaningfully — EVAL-05's
+# LangSmith Prompt Hub push tags each pushed version with this identifier.
+PROMPT_VERSION = "summarization-v1"
+
 SUMMARIZATION_SYSTEM_PROMPT = (
     "You are a regulatory compliance summarization assistant. Given a filing's "
     "extracted obligations, deadlines, risk flags, affected products, key entities, "

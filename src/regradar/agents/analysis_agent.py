@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 2
 
+# Bumped whenever EXTRACTION_SYSTEM_PROMPT changes meaningfully — EVAL-05's
+# LangSmith Prompt Hub push tags each pushed version with this identifier.
+PROMPT_VERSION = "extraction-v1"
+
 EXTRACTION_SYSTEM_PROMPT = (
     "You are a regulatory filing analyst. Extract obligations, deadlines, risk flags, "
     "affected products, key entities, and competitor mentions from the filing text below, "

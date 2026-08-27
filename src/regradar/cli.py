@@ -102,6 +102,15 @@ def _run_eval(*, run_type: str) -> None:
     print(f"  extraction_f1:        {_format_metric(run.extraction_f1)}")
 
 
+def _push_prompts() -> None:
+    """Push every agent's system prompt to LangSmith's Prompt Hub."""
+    from regradar.observability.prompts import push_all_prompts
+
+    results = push_all_prompts()
+    for identifier, url in results.items():
+        print(f"{identifier}: {url or 'SKIPPED (see logs)'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="regradar")
     subparsers = parser.add_subparsers(dest="command")
@@ -121,12 +130,16 @@ def main() -> None:
     )
 
     run_eval_parser = subparsers.add_parser(
-        "run-eval", help="Run EVAL-01's Ragas harness once and print a summary."
+        "run-eval", help="Run every built EVAL-* harness once and print a summary."
     )
     run_eval_parser.add_argument(
         "--run-type",
         choices=["manual", "scheduled", "pre_deploy_regression"],
         default="manual",
+    )
+
+    subparsers.add_parser(
+        "push-prompts", help="Push every agent's system prompt to LangSmith's Prompt Hub."
     )
 
     args = parser.parse_args()
@@ -141,6 +154,8 @@ def main() -> None:
         )
     elif args.command == "run-eval":
         _run_eval(run_type=args.run_type)
+    elif args.command == "push-prompts":
+        _push_prompts()
     else:
         parser.print_help()
 

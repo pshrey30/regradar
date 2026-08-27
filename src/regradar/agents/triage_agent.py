@@ -53,6 +53,11 @@ SEVERITY_ORDER = {
     RiskLevel.CRITICAL: 3,
 }
 
+# Bumped whenever SPOT_CHECK_SYSTEM_PROMPT/SPOT_CHECK_USER_PROMPT_TEMPLATE change
+# meaningfully — EVAL-05's LangSmith Prompt Hub push tags each pushed version
+# with this identifier.
+PROMPT_VERSION = "triage-spot-check-v1"
+
 SPOT_CHECK_SYSTEM_PROMPT = "You are a regulatory filing classifier. Respond with strict JSON only."
 SPOT_CHECK_USER_PROMPT_TEMPLATE = (
     'Classify this filing into one of ["financial", "clinical", "environmental", "other"], '
