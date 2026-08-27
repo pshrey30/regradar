@@ -11,14 +11,19 @@ ever created.
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from dotenv import dotenv_values
-from sqlalchemy import text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from regradar.core.config import get_settings
 from regradar.core.db import set_rls_context
+from regradar.ingestion.sources._common import insert_new_filing
+from regradar.ingestion.types import NewFiling
+from regradar.models.enums import FilingSource
+from regradar.models.filing import Filing
 
 pytestmark = pytest.mark.asyncio
 
@@ -229,3 +234,94 @@ async def test_default_org_filings_stay_invisible_to_org_2(second_org_with_data)
             await db.execute(text("DELETE FROM filings WHERE id = :id"), {"id": str(filing_id)})
             await db.commit()
     await engine.dispose()
+
+
+async def test_two_orgs_can_each_ingest_the_same_public_document():
+    """Real bug found in a post-SEC-05 audit: `uq_filings_source_document_id`
+    was `UNIQUE(source, source_document_id)` only — organization_id wasn't
+    part of it, unchanged since migration 0002, before organization_id
+    existed on filings at all. Two organizations both monitoring the same
+    public source that discover the same document would only ever get ONE
+    of them a Filing row: the second organization's insert_new_filing call
+    hit this constraint, caught the resulting IntegrityError (SEC-04's own
+    duplicate-race handling), and returned None — indistinguishable from a
+    genuine same-org race loss, silently dropping that org's filing.
+
+    Migration 0011 widened the constraint to (organization_id, source,
+    source_document_id); this proves two distinct orgs can each get their
+    own row for the exact same document.
+    """
+    settings = get_settings()
+    engine = create_async_engine(settings.effective_app_database_url.get_secret_value())
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    org_id = uuid.uuid4()
+    doc_id = f"cross-org-doc-{uuid.uuid4()}"
+
+    async with session_factory() as db:
+        await set_rls_context(db, role="service")
+        await db.execute(
+            text("INSERT INTO organizations (id, name) VALUES (:id, 'Cross-Org Doc Test Org')"),
+            {"id": str(org_id)},
+        )
+        await db.commit()
+    await engine.dispose()
+
+    async def _insert(organization_id: uuid.UUID):
+        engine = create_async_engine(settings.effective_app_database_url.get_secret_value())
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with session_factory() as db:
+            await set_rls_context(db, role="service")
+            source_config = SimpleNamespace(source=FilingSource.SEC, organization_id=organization_id)
+            result = await insert_new_filing(
+                db,
+                source_config,
+                NewFiling(
+                    source_document_id=doc_id,
+                    entity_name="Cross-Org Doc Test Corp",
+                    filing_type="10-K",
+                    filing_url="https://example.com/cross-org-doc-test",
+                    published_at=datetime.now(UTC),
+                ),
+            )
+            await db.commit()
+        await engine.dispose()
+        return result
+
+    try:
+        default_org_result = await _insert(uuid.UUID(_DEFAULT_ORG_ID))
+        second_org_result = await _insert(org_id)
+
+        assert default_org_result is not None, "default org's insert unexpectedly failed"
+        assert second_org_result is not None, (
+            "second org's insert was rejected by the (source, source_document_id) unique "
+            "constraint — organization_id must be part of that constraint"
+        )
+
+        engine = create_async_engine(settings.effective_app_database_url.get_secret_value())
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with session_factory() as db:
+            await set_rls_context(db, role="service")
+            rows = (
+                await db.execute(
+                    select(Filing).where(
+                        Filing.source == FilingSource.SEC, Filing.source_document_id == doc_id
+                    )
+                )
+            ).scalars().all()
+            assert {row.organization_id for row in rows} == {uuid.UUID(_DEFAULT_ORG_ID), org_id}
+            await db.execute(
+                delete(Filing).where(
+                    Filing.source == FilingSource.SEC, Filing.source_document_id == doc_id
+                )
+            )
+            await db.commit()
+        await engine.dispose()
+    finally:
+        engine = create_async_engine(settings.effective_app_database_url.get_secret_value())
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with session_factory() as db:
+            await set_rls_context(db, role="service")
+            await db.execute(text("DELETE FROM organizations WHERE id = :id"), {"id": str(org_id)})
+            await db.commit()
+        await engine.dispose()

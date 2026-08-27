@@ -29,7 +29,9 @@ if TYPE_CHECKING:
 class Filing(Base):
     __tablename__ = "filings"
     __table_args__ = (
-        UniqueConstraint("source", "source_document_id", name="uq_filings_source_document_id"),
+        UniqueConstraint(
+            "organization_id", "source", "source_document_id", name="uq_filings_source_document_id"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
