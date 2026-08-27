@@ -39,6 +39,18 @@ api = [
 worker = [
     "prefect>=2.19",
 ]
+eval = [
+    # EVAL-01: the `regradar run-eval` CLI subcommand's runtime dependency,
+    # not a dev/test-only tool — split out of `dev` so a production install
+    # that actually runs the eval harness pulls it in explicitly.
+    "ragas>=0.4,<0.5",
+    # ragas>=0.4's own `langchain-community` requirement is unpinned, which
+    # resolves to a version whose `langchain_community.chat_models` no
+    # longer has the `vertexai` submodule ragas imports eagerly at import
+    # time (ImportError even when Vertex AI is never used) — pin to the
+    # last version confirmed compatible.
+    "langchain-community>=0.3.20,<0.4",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
@@ -46,7 +58,6 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "moto>=5.0",
-    "ragas>=0.1",
     "evaluate>=0.4",
 ]
 

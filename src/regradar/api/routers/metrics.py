@@ -34,7 +34,7 @@ from regradar.schemas.metrics import MetricsResponse, MetricValue
 
 router = APIRouter()
 
-_METRIC_TARGETS: dict[str, float | None] = {
+METRIC_TARGETS: dict[str, float | None] = {
     "ragas_faithfulness": 0.87,
     "ragas_context_recall": 0.80,
     "rouge_l": 0.45,
@@ -46,14 +46,14 @@ _METRIC_TARGETS: dict[str, float | None] = {
     "avg_cost_per_filing_usd": None,
 }
 
-_METRIC_FIELDS = list(_METRIC_TARGETS.keys())
+_METRIC_FIELDS = list(METRIC_TARGETS.keys())
 
 
 def _to_response(row: EvalRun) -> MetricsResponse:
     metric_kwargs = {
         field: MetricValue(
             value=getattr(row, field),
-            target=_METRIC_TARGETS[field],
+            target=METRIC_TARGETS[field],
         )
         for field in _METRIC_FIELDS
     }

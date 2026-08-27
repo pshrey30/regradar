@@ -81,6 +81,19 @@ def _create_api_key(
     print(f"Key (shown once, will not be shown again): {plaintext_key}")
 
 
+def _run_eval(*, run_type: str) -> None:
+    """Run EVAL-01's Ragas harness once and print a summary."""
+    from regradar.evaluation.harness import run_eval
+    from regradar.models.enums import EvalRunType
+
+    run_type_enum = EvalRunType(run_type)
+    run = asyncio.run(run_eval(run_type_enum))
+
+    print(f"Eval run {run.id} ({run.run_type.value}): {'PASSED' if run.passed else 'FAILED'}")
+    print(f"  ragas_faithfulness:   {run.ragas_faithfulness:.3f}")
+    print(f"  ragas_context_recall: {run.ragas_context_recall:.3f}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="regradar")
     subparsers = parser.add_subparsers(dest="command")
@@ -99,6 +112,15 @@ def main() -> None:
         help="Override the key's rate limit (default: 60/minute).",
     )
 
+    run_eval_parser = subparsers.add_parser(
+        "run-eval", help="Run EVAL-01's Ragas harness once and print a summary."
+    )
+    run_eval_parser.add_argument(
+        "--run-type",
+        choices=["manual", "scheduled", "pre_deploy_regression"],
+        default="manual",
+    )
+
     args = parser.parse_args()
 
     if args.command == "poll-once":
@@ -109,6 +131,8 @@ def main() -> None:
             role=args.role,
             rate_limit_per_minute=args.rate_limit_per_minute,
         )
+    elif args.command == "run-eval":
+        _run_eval(run_type=args.run_type)
     else:
         parser.print_help()
 

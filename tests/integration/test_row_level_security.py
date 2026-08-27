@@ -297,10 +297,14 @@ async def test_analyst_cannot_select_eval_runs(rls_session: AsyncSession):
 
 
 async def test_admin_and_eng_lead_can_select_eval_runs(rls_session: AsyncSession):
+    """Asserts the query executes without an RLS denial, not that eval_runs
+    is empty — EVAL-01's harness can leave real rows behind now, unlike
+    when this test was written (SEC-01), when eval_runs was genuinely
+    empty in every environment."""
     for role in ("admin", "eng_lead"):
         await set_rls_context(rls_session, role=role)
         result = await rls_session.execute(text("SELECT count(*) FROM eval_runs"))
-        assert result.scalar_one() == 0  # no rows exist; asserts no RLS error, not row presence
+        assert result.scalar_one() >= 0
 
 
 async def test_analyst_cannot_update_source_configs(rls_session: AsyncSession):

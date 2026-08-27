@@ -14,6 +14,7 @@ from regradar.api.middleware import rate_limit as rate_limit_module
 from regradar.api.routers import filings as filings_module
 from regradar.llm_routing.tiered_router import ModelChoice
 from regradar.models.enums import ApiKeyRole
+from regradar.rag import answer_synthesis as answer_synthesis_module
 
 _TEST_MODEL_CHOICE = ModelChoice(
     tier="high", model="llama3.1", base_url="http://localhost:11434/v1", api_key="ollama-local"
@@ -161,8 +162,10 @@ def test_search_returns_synthesized_answer_and_sources_on_success(
     mock_response = MagicMock()
     mock_response.choices = [MagicMock(message=MagicMock(content="Widgets were recalled."))]
     mock_llm_client.chat.completions.create.return_value = mock_response
-    monkeypatch.setattr(filings_module, "select_model", lambda risk_level, task: _TEST_MODEL_CHOICE)
-    monkeypatch.setattr(filings_module, "build_client", lambda choice: mock_llm_client)
+    monkeypatch.setattr(
+        answer_synthesis_module, "select_model", lambda risk_level, task: _TEST_MODEL_CHOICE
+    )
+    monkeypatch.setattr(answer_synthesis_module, "build_client", lambda choice: mock_llm_client)
 
     response = TestClient(create_app()).post(
         "/v1/filings/search",
@@ -196,8 +199,10 @@ def test_search_falls_back_to_degraded_when_llm_call_fails(monkeypatch: pytest.M
     mock_llm_client.chat.completions.create.side_effect = APIConnectionError(
         request=MagicMock()
     )
-    monkeypatch.setattr(filings_module, "select_model", lambda risk_level, task: _TEST_MODEL_CHOICE)
-    monkeypatch.setattr(filings_module, "build_client", lambda choice: mock_llm_client)
+    monkeypatch.setattr(
+        answer_synthesis_module, "select_model", lambda risk_level, task: _TEST_MODEL_CHOICE
+    )
+    monkeypatch.setattr(answer_synthesis_module, "build_client", lambda choice: mock_llm_client)
 
     response = TestClient(create_app()).post(
         "/v1/filings/search",
