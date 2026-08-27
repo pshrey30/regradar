@@ -1,4 +1,4 @@
-"""EVAL-01/EVAL-02 — the eval harness.
+"""EVAL-01/EVAL-02/EVAL-03/EVAL-04 — the eval harness.
 
 One `regradar run-eval` invocation runs whichever fixture eval sets are
 built so far and writes a single averaged `eval_runs` row with whatever it
@@ -38,19 +38,35 @@ set's true/false positives/negatives into one precision and one recall
 figure — these two are computed over the fixture set as a whole, unlike
 ragas/rouge_l's per-case average, since that's what precision/recall mean.
 
+EVAL-04 (extraction_f1): runs a small, hand-written fixture set of filing
+chunks through the *real* Analysis Agent (agents.analysis_agent.
+analyze_node — a real structured-extraction LLM call). ExtractionResult has
+six fields (obligations, deadlines, risk_flags, affected_products,
+key_entities, competitor_mentions) but eval_runs has one extraction_f1
+column, so each case's six fields are flattened into one bag of extracted
+strings and greedily fuzzy-matched (token-Jaccard similarity, no exact-text
+requirement — an LLM's exact phrasing never matches hand-written ground
+truth verbatim) against a hand-labeled `expected_items` list, scored as one
+F1 per case. Per-case F1s are averaged across the fixture set, the same way
+EVAL-02's rouge_l is — unlike EVAL-03's alert precision/recall, which pools
+raw counts across the whole set instead, because each extraction case has
+its own independent ground-truth set rather than one shared confusion
+matrix.
+
 Each metric family scores independently: if one family's every case fails,
 its eval_runs column(s) stay null (not silently coerced to 0) and the run
 still writes whatever the other families measured. Only raises RuntimeError
 if NOTHING was measured across every family — that's the one case where
 writing a row would be pointless.
 
-extraction_f1/hallucination_rate/avg_cost_per_filing_usd/p99_latency_ms are
-EVAL-04/06's own scope, deliberately left null (not zero — GET /v1/metrics
-distinguishes "not measured" from "measured as zero" via `MetricValue.value`
-being nullable).
+hallucination_rate/avg_cost_per_filing_usd/p99_latency_ms are EVAL-06's own
+scope, deliberately left null (not zero — GET /v1/metrics distinguishes
+"not measured" from "measured as zero" via `MetricValue.value` being
+nullable).
 """
 
 import logging
+import re
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -63,6 +79,7 @@ from ragas.metrics.collections import ContextRecall, Faithfulness
 from rouge_score import rouge_scorer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from regradar.agents.analysis_agent import analyze_node
 from regradar.agents.state import ExtractionResult, PipelineState
 from regradar.agents.summarization_agent import summarize_node
 from regradar.agents.triage_agent import triage_node
@@ -70,10 +87,12 @@ from regradar.api.routers.metrics import METRIC_TARGETS
 from regradar.core.db import get_session_factory, set_rls_context
 from regradar.evaluation.dataset import (
     ALERT_EVAL_CASES,
+    EXTRACTION_EVAL_CASES,
     SEARCH_EVAL_CASES,
     SEED_FILINGS,
     SUMMARIZATION_EVAL_CASES,
     AlertEvalCase,
+    ExtractionEvalCase,
     SearchEvalCase,
     SummarizationEvalCase,
 )
@@ -83,11 +102,14 @@ from regradar.models.enums import EvalRunType, FilingStatus, RiskLevel
 from regradar.models.eval_run import EvalRun
 from regradar.models.filing import Filing
 from regradar.rag.answer_synthesis import PROMPT_VERSION, synthesize_answer
+from regradar.rag.chunking import Chunk
 from regradar.rag.embeddings import _get_embedding_client
 from regradar.rag.retriever import retrieve_similar_filings
 from regradar.schemas.filings import SearchSource
 
 logger = logging.getLogger(__name__)
+
+_FUZZY_MATCH_THRESHOLD = 0.5
 
 _ALERT_RISK_LEVELS = {RiskLevel.HIGH, RiskLevel.CRITICAL}
 
@@ -302,6 +324,89 @@ def _precision_recall(results: list[_AlertCaseResult]) -> tuple[float | None, fl
     return precision, recall
 
 
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"\w+", text.lower()))
+
+
+def _token_jaccard(a: str, b: str) -> float:
+    tokens_a, tokens_b = _tokenize(a), _tokenize(b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+
+
+def _extraction_f1(predicted: list[str], expected: list[str]) -> float:
+    """Greedily matches each predicted item against its best-scoring unused
+    expected item (token-Jaccard similarity >= _FUZZY_MATCH_THRESHOLD), the
+    same "loose" methodology real entity-extraction eval uses — an LLM's
+    exact phrasing never matches hand-written ground truth verbatim, so an
+    exact-string match would always undercount. A case with nothing
+    expected and nothing predicted is a trivial perfect match (1.0); a case
+    where exactly one side is empty is a trivial total miss (0.0)."""
+    if not predicted and not expected:
+        return 1.0
+    if not predicted or not expected:
+        return 0.0
+
+    remaining_expected = list(expected)
+    true_positives = 0
+    for item in predicted:
+        if not remaining_expected:
+            break
+        best_index, best_score = None, 0.0
+        for index, candidate in enumerate(remaining_expected):
+            score = _token_jaccard(item, candidate)
+            if score > best_score:
+                best_index, best_score = index, score
+        if best_index is not None and best_score >= _FUZZY_MATCH_THRESHOLD:
+            true_positives += 1
+            remaining_expected.pop(best_index)
+
+    precision = true_positives / len(predicted)
+    recall = true_positives / len(expected)
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
+def _score_extraction_case(case: ExtractionEvalCase) -> float | None:
+    """Runs the real analyze_node against one fixture case and scores its
+    flattened ExtractionResult against expected_items via F1. Returns None
+    (never raises) if extraction itself failed — analyze_node's own
+    contract is to degrade to `extraction=None` on failure, never raise."""
+    state = PipelineState(
+        filing_id=uuid.uuid4(),
+        raw_text="",
+        chunks=[
+            Chunk(
+                chunk_index=0,
+                chunk_text=case.chunk_text,
+                section_reference=None,
+                token_count=len(case.chunk_text.split()),
+                is_table=False,
+            )
+        ],
+    )
+    result_state = analyze_node(state)
+    if result_state.extraction is None:
+        logger.warning(
+            "Extraction eval case failed to produce a result, skipping: %r",
+            case.chunk_text[:80],
+        )
+        return None
+
+    extraction = result_state.extraction
+    predicted_items = (
+        [o.get("description", "") for o in extraction.obligations]
+        + [d.get("description", "") for d in extraction.deadlines]
+        + extraction.risk_flags
+        + extraction.affected_products
+        + extraction.key_entities
+        + extraction.competitor_mentions
+    )
+    return _extraction_f1(predicted_items, case.expected_items)
+
+
 def _target(field: str) -> float:
     """METRIC_TARGETS' entries for every metric this harness ever measures
     are non-null by definition (unlike hallucination_rate/
@@ -348,12 +453,12 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
     row with whatever it measured.
 
     Each metric family (EVAL-01's ragas pair, EVAL-02's rouge_l, EVAL-03's
-    alert precision/recall) scores independently — one family failing
-    entirely leaves its column(s) null, not zero, and doesn't stop the
-    other families' columns from being written. Raises RuntimeError only if
-    NOTHING was measured across every family — a completely empty row would
-    be pointless to write, and most likely means an LLM/classification
-    provider is unreachable.
+    alert precision/recall, EVAL-04's extraction_f1) scores independently —
+    one family failing entirely leaves its column(s) null, not zero, and
+    doesn't stop the other families' columns from being written. Raises
+    RuntimeError only if NOTHING was measured across every family — a
+    completely empty row would be pointless to write, and most likely means
+    an LLM/classification provider is unreachable.
     """
     session_factory = get_session_factory()
 
@@ -368,8 +473,18 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         for case in ALERT_EVAL_CASES
         if (result := _score_alert_case(case)) is not None
     ]
+    extraction_scores = [
+        score
+        for case in EXTRACTION_EVAL_CASES
+        if (score := _score_extraction_case(case)) is not None
+    ]
 
-    if not search_results and not summarization_scores and not alert_results:
+    if (
+        not search_results
+        and not summarization_scores
+        and not alert_results
+        and not extraction_scores
+    ):
         raise RuntimeError(
             "Every eval case failed across every metric family — no eval_runs row was "
             "written. Check that Ollama/HuggingFace/the configured LLM provider is reachable."
@@ -405,6 +520,11 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
     else:
         logger.warning("Every alert eval case failed; alert_precision/alert_recall stay null.")
 
+    if extraction_scores:
+        measured["extraction_f1"] = sum(extraction_scores) / len(extraction_scores)
+    else:
+        logger.warning("Every extraction eval case failed; extraction_f1 stays null.")
+
     passed = all(value > _target(field) for field, value in measured.items())
 
     run = EvalRun(
@@ -417,6 +537,7 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         rouge_l=measured.get("rouge_l"),
         alert_precision=measured.get("alert_precision"),
         alert_recall=measured.get("alert_recall"),
+        extraction_f1=measured.get("extraction_f1"),
         passed=passed,
     )
     async with session_factory() as db:
@@ -426,13 +547,15 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
 
     logger.info(
         "Eval run complete: %d/%d search cases, %d/%d summarization cases, %d/%d alert "
-        "cases scored, measured=%s, passed=%s",
+        "cases, %d/%d extraction cases scored, measured=%s, passed=%s",
         len(search_results),
         len(SEARCH_EVAL_CASES),
         len(summarization_scores),
         len(SUMMARIZATION_EVAL_CASES),
         len(alert_results),
         len(ALERT_EVAL_CASES),
+        len(extraction_scores),
+        len(EXTRACTION_EVAL_CASES),
         measured,
         passed,
     )

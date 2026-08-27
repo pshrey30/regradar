@@ -16,6 +16,7 @@ from regradar.agents.state import RetrievedChunk
 from regradar.evaluation import harness as harness_module
 from regradar.evaluation.dataset import (
     ALERT_EVAL_CASES,
+    EXTRACTION_EVAL_CASES,
     SEARCH_EVAL_CASES,
     SUMMARIZATION_EVAL_CASES,
 )
@@ -60,6 +61,7 @@ def _patch_common(
     synthesized_answer: str | None = "A synthesized answer.",
     rouge_l_score: float | None = 0.9,
     alert_all_fail: bool = False,
+    extraction_f1_score: float | None = 0.9,
 ) -> None:
     monkeypatch.setattr(harness_module, "_seed_fixture_corpus", AsyncMock(return_value={}))
     monkeypatch.setattr(harness_module, "_judge_llm", lambda: object())
@@ -93,6 +95,9 @@ def _patch_common(
     monkeypatch.setattr(
         harness_module, "_score_alert_case", MagicMock(return_value=alert_result)
     )
+    monkeypatch.setattr(
+        harness_module, "_score_extraction_case", MagicMock(return_value=extraction_f1_score)
+    )
 
 
 @pytest.mark.asyncio
@@ -111,6 +116,7 @@ async def test_run_eval_writes_averaged_scores_and_passes_above_thresholds(
     assert run.rouge_l == pytest.approx(0.9)
     assert run.alert_precision == pytest.approx(1.0)
     assert run.alert_recall == pytest.approx(1.0)
+    assert run.extraction_f1 == pytest.approx(0.9)
     assert run.passed is True
     assert run.run_type == EvalRunType.MANUAL
     assert run.git_commit_sha == "abc1234"
@@ -203,6 +209,7 @@ async def test_run_eval_raises_when_every_case_fails_across_every_metric_family(
         chunks_per_case=[],
         rouge_l_score=None,
         alert_all_fail=True,
+        extraction_f1_score=None,
     )
 
     with pytest.raises(RuntimeError, match="Every eval case failed"):
@@ -221,6 +228,7 @@ async def test_run_eval_raises_when_every_case_fails_answer_synthesis(
         synthesized_answer=None,
         rouge_l_score=None,
         alert_all_fail=True,
+        extraction_f1_score=None,
     )
 
     with pytest.raises(RuntimeError, match="Every eval case failed"):
@@ -240,6 +248,7 @@ async def test_run_eval_scores_every_fixture_case(monkeypatch: pytest.MonkeyPatc
     assert harness_module.synthesize_answer.call_count == len(SEARCH_EVAL_CASES)
     assert harness_module._score_summarization_case.call_count == len(SUMMARIZATION_EVAL_CASES)
     assert harness_module._score_alert_case.call_count == len(ALERT_EVAL_CASES)
+    assert harness_module._score_extraction_case.call_count == len(EXTRACTION_EVAL_CASES)
 
 
 def test_current_git_commit_sha_returns_none_on_subprocess_failure(monkeypatch: pytest.MonkeyPatch):
@@ -396,3 +405,119 @@ async def test_run_eval_leaves_alert_fields_null_when_every_alert_case_fails(
     assert run.alert_recall is None
     assert run.ragas_faithfulness == pytest.approx(0.95)  # other families still measured
     assert run.passed is True
+
+
+@pytest.mark.asyncio
+async def test_run_eval_fails_when_extraction_f1_is_below_documented_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _patch_db(monkeypatch)
+    _patch_common(
+        monkeypatch, faithfulness_score=0.95, context_recall_score=0.9, extraction_f1_score=0.2
+    )
+
+    run = await harness_module.run_eval(EvalRunType.MANUAL)
+
+    assert run.extraction_f1 == pytest.approx(0.2)
+    assert run.passed is False
+
+
+@pytest.mark.asyncio
+async def test_run_eval_leaves_extraction_f1_null_when_every_extraction_case_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _patch_db(monkeypatch)
+    _patch_common(
+        monkeypatch,
+        faithfulness_score=0.95,
+        context_recall_score=0.9,
+        extraction_f1_score=None,
+    )
+
+    run = await harness_module.run_eval(EvalRunType.MANUAL)
+
+    assert run.extraction_f1 is None
+    assert run.ragas_faithfulness == pytest.approx(0.95)  # other families still measured
+    assert run.passed is True
+
+
+def test_token_jaccard_scores_word_overlap():
+    assert harness_module._token_jaccard("the cat sat", "the cat sat") == pytest.approx(1.0)
+    assert harness_module._token_jaccard("completely different words", "nothing shared here") == 0.0
+    # "material weakness" vs "material weakness in controls" -> 2 shared / 4 union.
+    assert harness_module._token_jaccard(
+        "material weakness", "material weakness in controls"
+    ) == pytest.approx(0.5)
+
+
+def test_token_jaccard_returns_zero_for_an_empty_string():
+    assert harness_module._token_jaccard("", "anything") == 0.0
+    assert harness_module._token_jaccard("anything", "") == 0.0
+
+
+def test_extraction_f1_perfect_match_when_predicted_equals_expected():
+    f1 = harness_module._extraction_f1(
+        ["material weakness in controls", "Meridian Biotech"],
+        ["material weakness in controls", "Meridian Biotech"],
+    )
+    assert f1 == pytest.approx(1.0)
+
+
+def test_extraction_f1_trivial_perfect_score_when_both_empty():
+    assert harness_module._extraction_f1([], []) == pytest.approx(1.0)
+
+
+def test_extraction_f1_zero_when_only_one_side_is_empty():
+    assert harness_module._extraction_f1(["something"], []) == pytest.approx(0.0)
+    assert harness_module._extraction_f1([], ["something"]) == pytest.approx(0.0)
+
+
+def test_extraction_f1_partial_match_computes_precision_and_recall():
+    # 1 true positive ("material weakness in controls" fuzzy-matches),
+    # 1 false positive ("unrelated extra item"), 1 false negative
+    # ("Meridian Biotech" never predicted) -> precision=1/2, recall=1/2.
+    f1 = harness_module._extraction_f1(
+        ["material weakness in internal controls", "unrelated extra item"],
+        ["material weakness in controls", "Meridian Biotech"],
+    )
+    assert f1 == pytest.approx(0.5)
+
+
+def test_score_extraction_case_flattens_all_six_extraction_fields(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from regradar.agents.state import ExtractionResult
+    from regradar.evaluation.dataset import EXTRACTION_EVAL_CASES
+
+    case = EXTRACTION_EVAL_CASES[0]
+    fake_extraction = ExtractionResult(
+        obligations=[{"description": item, "source_chunk_index": 0}]
+        if (item := case.expected_items[0] if case.expected_items else None)
+        else [],
+        deadlines=[],
+        risk_flags=case.expected_items[1:2],
+        affected_products=[],
+        key_entities=case.expected_items[2:3],
+        competitor_mentions=[],
+    )
+    monkeypatch.setattr(
+        harness_module,
+        "analyze_node",
+        lambda state: state.model_copy(update={"extraction": fake_extraction}),
+    )
+
+    score = harness_module._score_extraction_case(case)
+
+    assert score is not None
+    assert score > 0.0  # at least some of the flattened items should fuzzy-match
+
+
+def test_score_extraction_case_returns_none_when_extraction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from regradar.evaluation.dataset import EXTRACTION_EVAL_CASES
+
+    case = EXTRACTION_EVAL_CASES[0]
+    monkeypatch.setattr(harness_module, "analyze_node", lambda state: state)  # extraction stays None
+
+    assert harness_module._score_extraction_case(case) is None

@@ -1,4 +1,4 @@
-"""Live end-to-end test for the EVAL-01/EVAL-02/EVAL-03 harness.
+"""Live end-to-end test for the EVAL-01/EVAL-02/EVAL-03/EVAL-04 harness.
 
 Marked `live` and excluded from default pytest runs (pyproject.toml's
 addopts) — run it explicitly with `pytest -m live` when you actually want
@@ -51,6 +51,7 @@ async def test_run_eval_writes_a_real_eval_runs_row_scored_by_a_real_llm():
     assert 0.0 <= run.ragas_faithfulness <= 1.0
     assert 0.0 <= run.ragas_context_recall <= 1.0
     assert 0.0 <= run.rouge_l <= 1.0
+    assert 0.0 <= run.extraction_f1 <= 1.0
     # Precision/recall can legitimately be null if the confusion matrix's
     # denominator was zero (e.g. no predicted positives) — only assert the
     # range when the harness actually measured one.
@@ -71,6 +72,7 @@ async def test_run_eval_writes_a_real_eval_runs_row_scored_by_a_real_llm():
             ).scalar_one()
             assert row.ragas_faithfulness == pytest.approx(run.ragas_faithfulness)
             assert row.rouge_l == pytest.approx(run.rouge_l)
+            assert row.extraction_f1 == pytest.approx(run.extraction_f1)
             if run.alert_precision is None:
                 assert row.alert_precision is None
             else:

@@ -99,6 +99,7 @@ def _run_eval(*, run_type: str) -> None:
     print(f"  rouge_l:              {_format_metric(run.rouge_l)}")
     print(f"  alert_precision:      {_format_metric(run.alert_precision)}")
     print(f"  alert_recall:         {_format_metric(run.alert_recall)}")
+    print(f"  extraction_f1:        {_format_metric(run.extraction_f1)}")
 
 
 def main() -> None:

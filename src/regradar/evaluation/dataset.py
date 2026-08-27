@@ -342,3 +342,98 @@ ALERT_EVAL_CASES: list[AlertEvalCase] = [
         # the pipeline's severity judgment goes beyond a bare keyword match.
     ),
 ]
+
+
+@dataclass(frozen=True)
+class ExtractionEvalCase:
+    """EVAL-04's fixture eval set: a small, hand-written filing chunk plus a
+    hand-labeled ground-truth list of facts it should yield, run through the
+    real Analysis Agent (agents.analysis_agent.analyze_node) and scored via
+    F1. The Analysis Agent's ExtractionResult has six fields (obligations,
+    deadlines, risk_flags, affected_products, key_entities,
+    competitor_mentions) but eval_runs has one extraction_f1 column — the
+    harness flattens all six into one bag of extracted strings per case and
+    fuzzy-matches that bag against `expected_items`, rather than scoring six
+    separate sub-metrics with nowhere to live.
+    """
+
+    chunk_text: str
+    expected_items: list[str]
+
+
+EXTRACTION_EVAL_CASES: list[ExtractionEvalCase] = [
+    ExtractionEvalCase(
+        chunk_text=(
+            "The FDA has identified significant violations at Meridian Biotech's "
+            "Raleigh, NC manufacturing facility. Investigators found that batch "
+            "records for the company's injectable insulin product, MeridiPen, "
+            "lacked required in-process sterility testing for three consecutive "
+            "production lots in March 2026. The firm must submit a corrective "
+            "action plan within 15 business days of receipt of this letter."
+        ),
+        expected_items=[
+            "missing in-process sterility testing",
+            "submit a corrective action plan within 15 business days",
+            "Meridian Biotech",
+            "MeridiPen insulin",
+        ],
+    ),
+    ExtractionEvalCase(
+        chunk_text=(
+            "Harborline Capital Partners reported total assets under management "
+            "of $4.2 billion as of fiscal year end 2025, a 12% increase from the "
+            "prior year. The company disclosed a material weakness in internal "
+            "controls related to the valuation of Level 3 illiquid securities, "
+            "identified during the Q4 2025 audit. Management must remediate the "
+            "weakness before the next annual audit."
+        ),
+        expected_items=[
+            "material weakness in internal controls over Level 3 securities valuation",
+            "remediate the weakness before the next annual audit",
+            "Harborline Capital Partners",
+        ],
+    ),
+    ExtractionEvalCase(
+        chunk_text=(
+            "FINRA found that Coastal Bridge Brokerage failed to establish and "
+            "maintain a supervisory system reasonably designed to detect "
+            "unsuitable variable annuity recommendations to elderly customers "
+            "between January 2024 and June 2025. The firm was censured and fined "
+            "$375,000, and agreed to retain an independent compliance consultant "
+            "within 30 days."
+        ),
+        expected_items=[
+            "unsuitable variable annuity recommendations to elderly customers",
+            "retain an independent compliance consultant within 30 days",
+            "Coastal Bridge Brokerage",
+            "FINRA",
+        ],
+    ),
+    ExtractionEvalCase(
+        chunk_text=(
+            "Pinehollow Diagnostics initiated a Class I recall of its GlucoSure "
+            "Rapid Test strips due to a manufacturing defect that can produce "
+            "falsely low blood glucose readings, posing a risk of undertreated "
+            "hypoglycemia. Approximately 340,000 units distributed between "
+            "September 2025 and January 2026 are affected. A competing "
+            "manufacturer, Veritas Diagnostics, issued a statement noting its own "
+            "test strips are unaffected."
+        ),
+        expected_items=[
+            "manufacturing defect causing falsely low glucose readings",
+            "risk of undertreated hypoglycemia",
+            "GlucoSure Rapid Test strips",
+            "Pinehollow Diagnostics",
+            "Veritas Diagnostics",
+        ],
+    ),
+    ExtractionEvalCase(
+        chunk_text=(
+            "The registrant's board approved the appointment of a new independent "
+            "director and updated its code of business conduct and ethics, "
+            "effective immediately. No further action is required by the company."
+        ),
+        expected_items=[],  # deliberately benign — a real test of whether the
+        # model over-extracts obligations/risk flags from routine, low-content text.
+    ),
+]
