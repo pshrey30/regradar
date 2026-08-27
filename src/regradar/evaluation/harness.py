@@ -27,16 +27,27 @@ generated executive_brief against a reference via ROUGE-L
 (rouge_score.rouge_scorer, entirely local — no network fetch, unlike
 `evaluate.load("rouge")`). No DB writes of its own — summarize_node is pure.
 
+EVAL-03 (alert_precision/alert_recall): runs a small, hand-written fixture
+set of filing texts through the *real* Triage Agent (agents.triage_agent.
+triage_node — a real HF zero-shot classification call, plus a real
+dual-model spot-check for low-confidence cases), scores each as a binary
+alert/no-alert classifier (risk_level HIGH or CRITICAL — the same threshold
+delivery_agent.py's filter_min_risk check uses to gate webhook/Slack/email
+delivery) against a hand-labeled `expected_alert`, and aggregates the whole
+set's true/false positives/negatives into one precision and one recall
+figure — these two are computed over the fixture set as a whole, unlike
+ragas/rouge_l's per-case average, since that's what precision/recall mean.
+
 Each metric family scores independently: if one family's every case fails,
-its eval_runs column stays null (not silently coerced to 0) and the run
-still writes whatever the other family measured. Only raises RuntimeError
+its eval_runs column(s) stay null (not silently coerced to 0) and the run
+still writes whatever the other families measured. Only raises RuntimeError
 if NOTHING was measured across every family — that's the one case where
 writing a row would be pointless.
 
-extraction_f1/alert_precision/alert_recall/hallucination_rate/
-avg_cost_per_filing_usd/p99_latency_ms are EVAL-03/04/06's own scope,
-deliberately left null (not zero — GET /v1/metrics distinguishes "not
-measured" from "measured as zero" via `MetricValue.value` being nullable).
+extraction_f1/hallucination_rate/avg_cost_per_filing_usd/p99_latency_ms are
+EVAL-04/06's own scope, deliberately left null (not zero — GET /v1/metrics
+distinguishes "not measured" from "measured as zero" via `MetricValue.value`
+being nullable).
 """
 
 import logging
@@ -54,18 +65,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.agents.state import ExtractionResult, PipelineState
 from regradar.agents.summarization_agent import summarize_node
+from regradar.agents.triage_agent import triage_node
 from regradar.api.routers.metrics import METRIC_TARGETS
 from regradar.core.db import get_session_factory, set_rls_context
 from regradar.evaluation.dataset import (
+    ALERT_EVAL_CASES,
     SEARCH_EVAL_CASES,
     SEED_FILINGS,
     SUMMARIZATION_EVAL_CASES,
+    AlertEvalCase,
     SearchEvalCase,
     SummarizationEvalCase,
 )
 from regradar.llm_routing.tiered_router import select_model
 from regradar.models.chunk import FilingChunk
-from regradar.models.enums import EvalRunType, FilingStatus
+from regradar.models.enums import EvalRunType, FilingStatus, RiskLevel
 from regradar.models.eval_run import EvalRun
 from regradar.models.filing import Filing
 from regradar.rag.answer_synthesis import PROMPT_VERSION, synthesize_answer
@@ -74,6 +88,8 @@ from regradar.rag.retriever import retrieve_similar_filings
 from regradar.schemas.filings import SearchSource
 
 logger = logging.getLogger(__name__)
+
+_ALERT_RISK_LEVELS = {RiskLevel.HIGH, RiskLevel.CRITICAL}
 
 # Matches migration 0010's seeded default organization — the harness has no
 # organization-management concerns, same scope decision SEC-05 made for the
@@ -241,6 +257,51 @@ def _score_summarization_case(case: SummarizationEvalCase) -> float | None:
     return score["rougeL"].fmeasure
 
 
+@dataclass
+class _AlertCaseResult:
+    expected_alert: bool
+    predicted_alert: bool
+
+
+def _score_alert_case(case: AlertEvalCase) -> _AlertCaseResult | None:
+    """Runs the real triage_node against one fixture case and derives its
+    binary alert/no-alert prediction from the resulting risk_level. Returns
+    None (never raises) if triage itself failed to classify — triage_node's
+    own contract is to leave risk_level=None on a real classification
+    failure (e.g. the HF endpoint being unreachable after retry), never
+    raise; that's a harness/infra problem, not a wrong prediction, so it's
+    excluded from the confusion matrix rather than counted as either."""
+    state = PipelineState(filing_id=uuid.uuid4(), raw_text=case.raw_text)
+    result_state = triage_node(state)
+    if result_state.risk_level is None:
+        logger.warning(
+            "Alert eval case failed to classify, skipping: %r", case.raw_text[:80]
+        )
+        return None
+
+    return _AlertCaseResult(
+        expected_alert=case.expected_alert,
+        predicted_alert=result_state.risk_level in _ALERT_RISK_LEVELS,
+    )
+
+
+def _precision_recall(results: list[_AlertCaseResult]) -> tuple[float | None, float | None]:
+    """Aggregate precision/recall over the whole fixture set's confusion
+    matrix — not a per-case average, since that isn't what these metrics
+    mean. Either figure is None (not 0.0) when its denominator is zero, so
+    an all-negative or all-predicted-negative fixture set doesn't silently
+    report a fabricated perfect or zero score."""
+    true_positives = sum(1 for r in results if r.expected_alert and r.predicted_alert)
+    false_positives = sum(1 for r in results if not r.expected_alert and r.predicted_alert)
+    false_negatives = sum(1 for r in results if r.expected_alert and not r.predicted_alert)
+
+    predicted_positives = true_positives + false_positives
+    actual_positives = true_positives + false_negatives
+    precision = true_positives / predicted_positives if predicted_positives > 0 else None
+    recall = true_positives / actual_positives if actual_positives > 0 else None
+    return precision, recall
+
+
 def _target(field: str) -> float:
     """METRIC_TARGETS' entries for every metric this harness ever measures
     are non-null by definition (unlike hallucination_rate/
@@ -286,12 +347,13 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
     """Runs every fixture eval set built so far and persists one `eval_runs`
     row with whatever it measured.
 
-    Each metric family (EVAL-01's ragas pair, EVAL-02's rouge_l) scores
-    independently — one family failing entirely leaves its column(s) null,
-    not zero, and doesn't stop the other family's column(s) from being
-    written. Raises RuntimeError only if NOTHING was measured across every
-    family — a completely empty row would be pointless to write, and most
-    likely means the local LLM provider is unreachable.
+    Each metric family (EVAL-01's ragas pair, EVAL-02's rouge_l, EVAL-03's
+    alert precision/recall) scores independently — one family failing
+    entirely leaves its column(s) null, not zero, and doesn't stop the
+    other families' columns from being written. Raises RuntimeError only if
+    NOTHING was measured across every family — a completely empty row would
+    be pointless to write, and most likely means an LLM/classification
+    provider is unreachable.
     """
     session_factory = get_session_factory()
 
@@ -301,11 +363,16 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         for case in SUMMARIZATION_EVAL_CASES
         if (score := _score_summarization_case(case)) is not None
     ]
+    alert_results = [
+        result
+        for case in ALERT_EVAL_CASES
+        if (result := _score_alert_case(case)) is not None
+    ]
 
-    if not search_results and not summarization_scores:
+    if not search_results and not summarization_scores and not alert_results:
         raise RuntimeError(
             "Every eval case failed across every metric family — no eval_runs row was "
-            "written. Check that Ollama/the configured LLM provider is reachable."
+            "written. Check that Ollama/HuggingFace/the configured LLM provider is reachable."
         )
 
     measured: dict[str, float] = {}
@@ -324,6 +391,20 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
     else:
         logger.warning("Every summarization eval case failed; rouge_l stays null.")
 
+    if alert_results:
+        alert_precision, alert_recall = _precision_recall(alert_results)
+        if alert_precision is not None:
+            measured["alert_precision"] = alert_precision
+        if alert_recall is not None:
+            measured["alert_recall"] = alert_recall
+        if alert_precision is None and alert_recall is None:
+            logger.warning(
+                "Alert eval cases scored but neither precision nor recall had a "
+                "non-zero denominator; alert_precision/alert_recall stay null."
+            )
+    else:
+        logger.warning("Every alert eval case failed; alert_precision/alert_recall stay null.")
+
     passed = all(value > _target(field) for field, value in measured.items())
 
     run = EvalRun(
@@ -334,6 +415,8 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         ragas_faithfulness=measured.get("ragas_faithfulness"),
         ragas_context_recall=measured.get("ragas_context_recall"),
         rouge_l=measured.get("rouge_l"),
+        alert_precision=measured.get("alert_precision"),
+        alert_recall=measured.get("alert_recall"),
         passed=passed,
     )
     async with session_factory() as db:
@@ -342,12 +425,14 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         await db.commit()
 
     logger.info(
-        "Eval run complete: %d/%d search cases, %d/%d summarization cases scored, "
-        "measured=%s, passed=%s",
+        "Eval run complete: %d/%d search cases, %d/%d summarization cases, %d/%d alert "
+        "cases scored, measured=%s, passed=%s",
         len(search_results),
         len(SEARCH_EVAL_CASES),
         len(summarization_scores),
         len(SUMMARIZATION_EVAL_CASES),
+        len(alert_results),
+        len(ALERT_EVAL_CASES),
         measured,
         passed,
     )

@@ -1,15 +1,17 @@
-"""Live end-to-end test for the EVAL-01/EVAL-02 harness.
+"""Live end-to-end test for the EVAL-01/EVAL-02/EVAL-03 harness.
 
 Marked `live` and excluded from default pytest runs (pyproject.toml's
 addopts) — run it explicitly with `pytest -m live` when you actually want
 to verify the real integration. Requires a real Postgres connection (via
-.env's APP_DATABASE_URL) AND Ollama running locally with llama3.1 and
+.env's APP_DATABASE_URL), Ollama running locally with llama3.1 and
 nomic-embed-text pulled, USE_LOCAL_LLM=true / USE_LOCAL_EMBEDDINGS=true in
-.env (matches the same manual-start convention as
-tests/unit/agents/test_triage_live_smoke.py's spot-check test). Never wire
-this into CI: this project's cost/supervision policy is that even $0 local
-LLM calls only run when a human explicitly asks for one, and this test's
-Postgres writes are real (self-cleaning, but real).
+.env, AND a real HUGGINGFACE_API_TOKEN configured (EVAL-03's alert scoring
+calls the real Triage Agent, which classifies via HF's zero-shot endpoint —
+matches the same manual-start/real-credential convention as
+tests/unit/agents/test_triage_live_smoke.py). Never wire this into CI: this
+project's cost/supervision policy is that even $0 local/free-tier calls
+only run when a human explicitly asks for one, and this test's Postgres
+writes are real (self-cleaning, but real).
 """
 
 from pathlib import Path
@@ -49,6 +51,13 @@ async def test_run_eval_writes_a_real_eval_runs_row_scored_by_a_real_llm():
     assert 0.0 <= run.ragas_faithfulness <= 1.0
     assert 0.0 <= run.ragas_context_recall <= 1.0
     assert 0.0 <= run.rouge_l <= 1.0
+    # Precision/recall can legitimately be null if the confusion matrix's
+    # denominator was zero (e.g. no predicted positives) — only assert the
+    # range when the harness actually measured one.
+    if run.alert_precision is not None:
+        assert 0.0 <= run.alert_precision <= 1.0
+    if run.alert_recall is not None:
+        assert 0.0 <= run.alert_recall <= 1.0
     assert run.git_commit_sha is not None
 
     settings = get_settings()
@@ -62,6 +71,14 @@ async def test_run_eval_writes_a_real_eval_runs_row_scored_by_a_real_llm():
             ).scalar_one()
             assert row.ragas_faithfulness == pytest.approx(run.ragas_faithfulness)
             assert row.rouge_l == pytest.approx(run.rouge_l)
+            if run.alert_precision is None:
+                assert row.alert_precision is None
+            else:
+                assert row.alert_precision == pytest.approx(run.alert_precision)
+            if run.alert_recall is None:
+                assert row.alert_recall is None
+            else:
+                assert row.alert_recall == pytest.approx(run.alert_recall)
 
             # No fixture data should survive the run.
             leftover_filings = (

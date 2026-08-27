@@ -245,3 +245,100 @@ SUMMARIZATION_EVAL_CASES: list[SummarizationEvalCase] = [
         ),
     ),
 ]
+
+
+@dataclass(frozen=True)
+class AlertEvalCase:
+    """EVAL-03's fixture eval set: a small, hand-written filing text plus
+    whether it should become a customer-facing "alert" — risk_level HIGH or
+    CRITICAL, the same threshold that gates webhook/Slack/email delivery
+    (delivery_agent.py's `filter_min_risk` check) — run through the real
+    Triage Agent (agents.triage_agent.triage_node, a real HF classification
+    call plus a real dual-model spot-check for low-confidence cases) and
+    scored as a binary alert/no-alert classifier against `expected_alert`.
+    """
+
+    raw_text: str
+    expected_alert: bool
+
+
+ALERT_EVAL_CASES: list[AlertEvalCase] = [
+    AlertEvalCase(
+        raw_text=(
+            "The Company disclosed a material weakness in internal control over "
+            "financial reporting and is restating its prior-period financial statements."
+        ),
+        expected_alert=True,
+    ),
+    AlertEvalCase(
+        raw_text=(
+            "The FDA issued a warning letter citing significant violations of current "
+            "good manufacturing practice regulations at the company's manufacturing facility."
+        ),
+        expected_alert=True,
+    ),
+    AlertEvalCase(
+        raw_text=(
+            "The company received a cease and desist order from the SEC related to "
+            "alleged securities fraud in its private placement offering documents."
+        ),
+        expected_alert=True,
+    ),
+    AlertEvalCase(
+        raw_text=(
+            "A Class I recall was initiated for an implantable medical device due to a "
+            "defect that could cause serious injury or death."
+        ),
+        expected_alert=True,
+    ),
+    AlertEvalCase(
+        raw_text=(
+            "Shareholders filed a class action lawsuit alleging the company made "
+            "materially false and misleading statements in its registration statement."
+        ),
+        expected_alert=True,
+    ),
+    AlertEvalCase(
+        raw_text=(
+            "An internal audit uncovered previously undisclosed related-party "
+            "transactions that senior management failed to report to the board for "
+            "over a year, raising concerns about the integrity of prior financial "
+            "disclosures."
+        ),
+        expected_alert=True,  # severe, but deliberately has no CRITICAL/HIGH trigger
+        # keyword — a real test of whether the HF-confidence + spot-check path
+        # catches what the deterministic keyword heuristic alone would miss.
+    ),
+    AlertEvalCase(
+        raw_text="The board announced the appointment of a new independent director to serve a three-year term.",
+        expected_alert=False,
+    ),
+    AlertEvalCase(
+        raw_text="The company changed its registered agent address and principal office location in Delaware.",
+        expected_alert=False,
+    ),
+    AlertEvalCase(
+        raw_text=(
+            "The company submitted its routine annual report with no material changes "
+            "from the prior year's disclosures."
+        ),
+        expected_alert=False,
+    ),
+    AlertEvalCase(
+        raw_text=(
+            "The company announced a two-for-one stock split effective next quarter, "
+            "subject to shareholder approval at the annual meeting."
+        ),
+        expected_alert=False,
+    ),
+    AlertEvalCase(
+        raw_text=(
+            "The company's quarterly investor newsletter referenced last year's "
+            "product recall as a case study in effective crisis management and "
+            "customer communication."
+        ),
+        expected_alert=False,  # mentions "recall" but describes a past event
+        # retrospectively, not a new regulatory action — a real test of whether
+        # the pipeline's severity judgment goes beyond a bare keyword match.
+    ),
+]

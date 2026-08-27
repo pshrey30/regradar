@@ -97,6 +97,8 @@ def _run_eval(*, run_type: str) -> None:
     print(f"  ragas_faithfulness:   {_format_metric(run.ragas_faithfulness)}")
     print(f"  ragas_context_recall: {_format_metric(run.ragas_context_recall)}")
     print(f"  rouge_l:              {_format_metric(run.rouge_l)}")
+    print(f"  alert_precision:      {_format_metric(run.alert_precision)}")
+    print(f"  alert_recall:         {_format_metric(run.alert_recall)}")
 
 
 def main() -> None:
