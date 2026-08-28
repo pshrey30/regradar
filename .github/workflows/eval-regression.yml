@@ -28,7 +28,14 @@ name: EVAL-07 — Eval Regression Gate
 jobs:
   eval-regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 min wasn't enough: a real run got cancelled by this timeout after
+    # ~33 real LLM calls (visible via Langfuse's per-client warning) still
+    # hadn't finished the full fixture set. CPU-only Ollama inference for
+    # llama3.1 is genuinely slower than local dev hardware; the full harness
+    # needs on the order of 50-60 real LLM calls (ragas's structured-output
+    # scoring alone issues several calls per search case), so give it real
+    # headroom rather than guess again at a smaller/weaker model.
+    timeout-minutes: 60
 
     services:
       postgres:
