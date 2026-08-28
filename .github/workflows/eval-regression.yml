@@ -73,14 +73,18 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ci-dummy
       SEC_EDGAR_USER_AGENT: "RegRadar-CI/1.0 (ci@example.com)"
       OPENAI_API_KEY: ci-dummy
-      # Same small model used as this project's own "low tier" (ADR-05) —
-      # used for BOTH tiers here specifically to keep this workflow's
-      # runtime and download size small; production still uses llama3.1 for
-      # the high tier. A deliberate CI-only substitution, not a real routing
-      # policy change.
+      # First attempt used llama3.2:1b (this project's "low tier" model, ADR-05)
+      # for both tiers to keep the CI download small — a real run showed that
+      # model can't reliably follow ragas/instructor's structured-output
+      # prompting (it echoed the JSON *schema* back instead of filling it in,
+      # failing every retry). llama3.1 is the same model already proven to
+      # work for this in every local live-verification across EVAL-01..04;
+      # used for both tiers here since the eval harness cares about real
+      # scoring quality, not exercising two distinct tier models (unlike
+      # tiered_router's own unit tests, which mock the client entirely).
       USE_LOCAL_LLM: "true"
-      LOCAL_LLM_MODEL: llama3.2:1b
-      LOCAL_LLM_LOW_MODEL: llama3.2:1b
+      LOCAL_LLM_MODEL: llama3.1
+      LOCAL_LLM_LOW_MODEL: llama3.1
       LOCAL_LLM_BASE_URL: http://localhost:11434/v1
       USE_LOCAL_EMBEDDINGS: "true"
       LOCAL_EMBEDDING_MODEL: nomic-embed-text
@@ -106,13 +110,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ollama/models
-          key: ollama-models-llama3.2-1b-nomic-embed-text
+          key: ollama-models-llama3.1-nomic-embed-text
 
       - name: Start Ollama and pull models
         run: |
           ollama serve &
           for i in $(seq 1 30); do curl -sf http://localhost:11434/api/tags && break; sleep 1; done
-          ollama pull llama3.2:1b
+          ollama pull llama3.1
           ollama pull nomic-embed-text
 
       - name: Run the eval harness (regradar run-eval)
