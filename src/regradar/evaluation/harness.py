@@ -230,7 +230,12 @@ def _judge_llm():
     (tiered_router.select_model) — no separate judge-LLM credential."""
     choice = select_model(risk_level=None, task="analysis")
     client = AsyncOpenAI(base_url=choice.base_url, api_key=choice.api_key.get_secret_value())
-    return llm_factory(choice.model, client=client)
+    # temperature=0: an eval judge that samples non-deterministically makes
+    # faithfulness/context_recall scores vary run to run on identical
+    # inputs — confirmed via two live runs of this exact harness producing
+    # meaningfully different scores (e.g. context_recall 0.601 vs 0.437) off
+    # the same fixture set. Matches every agent's temperature=0 convention.
+    return llm_factory(choice.model, client=client, temperature=0)
 
 
 async def _score_search_case(

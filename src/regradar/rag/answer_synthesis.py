@@ -47,6 +47,13 @@ def synthesize_answer(query: str, sources: list[SearchSource]) -> str | None:
                 {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
                 {"role": "user", "content": f"Excerpts:\n{context}\n\nQuestion: {query}"},
             ],
+            # Every other agent in this codebase pins temperature=0
+            # (triage_agent.py, summarization_agent.py, analysis_agent.py);
+            # this call was the one exception, making EVAL-01's ragas
+            # faithfulness/context_recall scores non-deterministic run to
+            # run — confirmed via two live runs producing meaningfully
+            # different scores off the same fixture set.
+            temperature=0,
         )
     except (APIConnectionError, RateLimitError, InternalServerError):
         logger.warning("Search answer-generation call failed; degrading to sources only.")
