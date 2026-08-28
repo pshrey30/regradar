@@ -59,16 +59,32 @@ still writes whatever the other families measured. Only raises RuntimeError
 if NOTHING was measured across every family — that's the one case where
 writing a row would be pointless.
 
-hallucination_rate/avg_cost_per_filing_usd/p99_latency_ms are EVAL-06's own
-scope, deliberately left null (not zero — GET /v1/metrics distinguishes
-"not measured" from "measured as zero" via `MetricValue.value` being
-nullable).
+EVAL-06 (p99_latency_ms): every real-pipeline call the four families above
+already make (synthesize_answer, summarize_node, triage_node, analyze_node —
+the same calls llm_routing.tiered_router/triage_agent now construct through
+Langfuse's drop-in OpenAI client, so they're also traced to Langfuse's own
+dashboard for real humans to look at) has its wall-clock latency recorded
+via `_latency_sink`, a contextvar `run_eval` sets for the duration of one
+run. p99 is computed over that pooled sample once every family has run —
+not its own separate fixture set, since it's timing the same calls the
+other families already make, not adding new ones.
+
+avg_cost_per_filing_usd stays null: it has no documented numeric target
+anywhere (GET /v1/metrics' own docstring says so), and computing it
+accurately would need a maintained per-model USD pricing table — fragile,
+and moot for this project's primary local-Ollama path, which is genuinely
+$0. Langfuse's own dashboard already shows real per-call cost for whichever
+models it has pricing data for, without regradar needing to duplicate that
+table. hallucination_rate has no EVAL ticket at all in the ticket list this
+project has seen so far and stays null for the same "not measured" reason.
 """
 
 import logging
 import re
 import subprocess
+import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -120,6 +136,19 @@ _DEFAULT_ORG_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 _RETRIEVAL_TOP_K = 5
 _FIXTURE_SOURCE_DOCUMENT_PREFIX = "eval-01-fixture-"
+
+# EVAL-06: set by run_eval() for the duration of one run; the real-pipeline
+# call inside each _score_*_case function appends its latency here if it's
+# set. None outside of a run_eval() call (e.g. when a scoring function is
+# exercised directly in a unit test) — _record_latency_ms is then a no-op,
+# so no existing call site or test needs to know this exists.
+_latency_sink: ContextVar[list[float] | None] = ContextVar("_latency_sink", default=None)
+
+
+def _record_latency_ms(elapsed_ms: float) -> None:
+    sink = _latency_sink.get()
+    if sink is not None:
+        sink.append(elapsed_ms)
 
 
 @dataclass
@@ -232,7 +261,9 @@ async def _score_search_case(
         for chunk in chunks
     ]
 
+    _start = time.perf_counter()
     answer = synthesize_answer(case.question, sources)
+    _record_latency_ms((time.perf_counter() - _start) * 1000)
     if not answer:
         logger.warning("Eval case's answer synthesis failed, skipping: %r", case.question)
         return None
@@ -266,7 +297,9 @@ def _score_summarization_case(case: SummarizationEvalCase) -> float | None:
             key_entities=case.key_entities,
         ),
     )
+    _start = time.perf_counter()
     result_state = summarize_node(state)
+    _record_latency_ms((time.perf_counter() - _start) * 1000)
     if result_state.briefs is None:
         logger.warning(
             "Summarization eval case failed to produce a brief, skipping: entities=%r",
@@ -294,7 +327,9 @@ def _score_alert_case(case: AlertEvalCase) -> _AlertCaseResult | None:
     raise; that's a harness/infra problem, not a wrong prediction, so it's
     excluded from the confusion matrix rather than counted as either."""
     state = PipelineState(filing_id=uuid.uuid4(), raw_text=case.raw_text)
+    _start = time.perf_counter()
     result_state = triage_node(state)
+    _record_latency_ms((time.perf_counter() - _start) * 1000)
     if result_state.risk_level is None:
         logger.warning(
             "Alert eval case failed to classify, skipping: %r", case.raw_text[:80]
@@ -387,7 +422,9 @@ def _score_extraction_case(case: ExtractionEvalCase) -> float | None:
             )
         ],
     )
+    _start = time.perf_counter()
     result_state = analyze_node(state)
+    _record_latency_ms((time.perf_counter() - _start) * 1000)
     if result_state.extraction is None:
         logger.warning(
             "Extraction eval case failed to produce a result, skipping: %r",
@@ -405,6 +442,14 @@ def _score_extraction_case(case: ExtractionEvalCase) -> float | None:
         + extraction.competitor_mentions
     )
     return _extraction_f1(predicted_items, case.expected_items)
+
+
+def _percentile(values: list[float], p: float) -> float:
+    """Nearest-rank percentile — no numpy dependency needed for a fixture
+    set this small."""
+    ordered = sorted(values)
+    index = min(int(p * len(ordered)), len(ordered) - 1)
+    return ordered[index]
 
 
 def _target(field: str) -> float:
@@ -462,28 +507,34 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
     """
     session_factory = get_session_factory()
 
-    search_results = await _run_search_eval(session_factory)
-    summarization_scores = [
-        score
-        for case in SUMMARIZATION_EVAL_CASES
-        if (score := _score_summarization_case(case)) is not None
-    ]
-    alert_results = [
-        result
-        for case in ALERT_EVAL_CASES
-        if (result := _score_alert_case(case)) is not None
-    ]
-    extraction_scores = [
-        score
-        for case in EXTRACTION_EVAL_CASES
-        if (score := _score_extraction_case(case)) is not None
-    ]
+    latencies_ms: list[float] = []
+    latency_token = _latency_sink.set(latencies_ms)
+    try:
+        search_results = await _run_search_eval(session_factory)
+        summarization_scores = [
+            score
+            for case in SUMMARIZATION_EVAL_CASES
+            if (score := _score_summarization_case(case)) is not None
+        ]
+        alert_results = [
+            result
+            for case in ALERT_EVAL_CASES
+            if (result := _score_alert_case(case)) is not None
+        ]
+        extraction_scores = [
+            score
+            for case in EXTRACTION_EVAL_CASES
+            if (score := _score_extraction_case(case)) is not None
+        ]
+    finally:
+        _latency_sink.reset(latency_token)
 
     if (
         not search_results
         and not summarization_scores
         and not alert_results
         and not extraction_scores
+        and not latencies_ms
     ):
         raise RuntimeError(
             "Every eval case failed across every metric family — no eval_runs row was "
@@ -525,7 +576,20 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
     else:
         logger.warning("Every extraction eval case failed; extraction_f1 stays null.")
 
+    p99_latency_ms: int | None = None
+    if latencies_ms:
+        p99_latency_ms = round(_percentile(latencies_ms, 0.99))
+    else:
+        logger.warning(
+            "No real-pipeline call recorded a latency this run; p99_latency_ms stays null."
+        )
+
+    # p99_latency_ms is the one metric where a LOWER value is better (a
+    # ceiling target, not a floor like every other metric here) — checked
+    # with the opposite comparison from `measured`'s generic loop below.
     passed = all(value > _target(field) for field, value in measured.items())
+    if p99_latency_ms is not None:
+        passed = passed and p99_latency_ms < _target("p99_latency_ms")
 
     run = EvalRun(
         id=uuid.uuid4(),
@@ -538,6 +602,7 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         alert_precision=measured.get("alert_precision"),
         alert_recall=measured.get("alert_recall"),
         extraction_f1=measured.get("extraction_f1"),
+        p99_latency_ms=p99_latency_ms,
         passed=passed,
     )
     async with session_factory() as db:
@@ -547,7 +612,8 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
 
     logger.info(
         "Eval run complete: %d/%d search cases, %d/%d summarization cases, %d/%d alert "
-        "cases, %d/%d extraction cases scored, measured=%s, passed=%s",
+        "cases, %d/%d extraction cases scored, %d latency samples, measured=%s, "
+        "p99_latency_ms=%s, passed=%s",
         len(search_results),
         len(SEARCH_EVAL_CASES),
         len(summarization_scores),
@@ -556,7 +622,9 @@ async def run_eval(run_type: EvalRunType) -> EvalRun:
         len(ALERT_EVAL_CASES),
         len(extraction_scores),
         len(EXTRACTION_EVAL_CASES),
+        len(latencies_ms),
         measured,
+        p99_latency_ms,
         passed,
     )
     return run

@@ -100,6 +100,10 @@ def _run_eval(*, run_type: str) -> None:
     print(f"  alert_precision:      {_format_metric(run.alert_precision)}")
     print(f"  alert_recall:         {_format_metric(run.alert_recall)}")
     print(f"  extraction_f1:        {_format_metric(run.extraction_f1)}")
+    print(
+        f"  p99_latency_ms:       "
+        f"{run.p99_latency_ms if run.p99_latency_ms is not None else '(not measured)'}"
+    )
 
 
 def _push_prompts() -> None:

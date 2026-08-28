@@ -17,7 +17,12 @@ local-mode path and mocked unit tests exercise this code.
 
 from typing import Literal
 
-from openai import OpenAI
+# EVAL-06: the Langfuse drop-in replacement for openai.OpenAI — same class,
+# every real call transparently traced (latency, tokens, cost) to Langfuse.
+# Fails open with no LANGFUSE_PUBLIC_KEY/SECRET_KEY configured: a call still
+# raises the same openai exceptions on real failure, just logs a warning
+# first (verified directly, not assumed).
+from langfuse.openai import OpenAI
 from pydantic import BaseModel, SecretStr
 
 from regradar.core.config import get_settings

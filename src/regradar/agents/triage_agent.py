@@ -12,7 +12,11 @@ import logging
 import time
 
 import httpx
-from openai import OpenAI
+
+# EVAL-06: the Langfuse drop-in replacement for openai.OpenAI — see
+# llm_routing/tiered_router.py's import for why (traces the spot-check call
+# the same way every other agent's LLM call is traced).
+from langfuse.openai import OpenAI
 from pydantic import BaseModel
 
 from regradar.agents.state import PipelineState

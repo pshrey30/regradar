@@ -22,7 +22,12 @@ dependencies = [
     "llama-index>=0.10",
     "llama-index-retrievers-bm25>=0.3",
     "llama-index-llms-ollama>=0.5",
-    "openai>=1.35",
+    # Pinned to the range llama-index-llms-openai/langchain-openai/instructor
+    # (pulled in transitively by ragas) already agree on — the previous
+    # unbounded ">=1.35" otherwise lets pip's resolver drift onto a newer
+    # openai release incompatible with those (found while adding EVAL-06's
+    # langfuse dependency, whose own openai requirement has no upper bound).
+    "openai>=2.45,<3",
     "httpx>=0.27",
     "boto3>=1.34",
     "feedparser>=6.0",
@@ -30,6 +35,15 @@ dependencies = [
     "tiktoken>=0.7",
     "pdfplumber>=0.11",
     "beautifulsoup4>=4.12",
+    # EVAL-06: a core dependency, not an eval-extra one like ragas/rouge-score
+    # /langsmith — tracing has to wrap every real agent LLM call (triage,
+    # summarization, extraction, search), not just regradar run-eval's
+    # fixture cases, or Langfuse's dashboard would only ever show synthetic
+    # eval data instead of the real running system. Fails open with no
+    # LANGFUSE_PUBLIC_KEY/SECRET_KEY configured (verified: the wrapped
+    # client still raises the same openai.APIConnectionError on a real call
+    # failure, just logs a warning first — no new failure mode).
+    "langfuse>=3.15,<4",
 ]
 
 [project.optional-dependencies]

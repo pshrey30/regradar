@@ -117,6 +117,8 @@ async def test_run_eval_writes_averaged_scores_and_passes_above_thresholds(
     assert run.alert_precision == pytest.approx(1.0)
     assert run.alert_recall == pytest.approx(1.0)
     assert run.extraction_f1 == pytest.approx(0.9)
+    assert run.p99_latency_ms is not None
+    assert run.p99_latency_ms >= 0
     assert run.passed is True
     assert run.run_type == EvalRunType.MANUAL
     assert run.git_commit_sha == "abc1234"
@@ -217,9 +219,13 @@ async def test_run_eval_raises_when_every_case_fails_across_every_metric_family(
 
 
 @pytest.mark.asyncio
-async def test_run_eval_raises_when_every_case_fails_answer_synthesis(
+async def test_run_eval_still_records_latency_when_every_case_fails_answer_synthesis(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """EVAL-06: the real synthesize_answer call still happens (and its
+    latency is still real) even when it returns no usable answer — a run
+    with nothing else measurable still writes a row via p99_latency_ms
+    rather than raising, since something genuinely was measured."""
     _patch_db(monkeypatch)
     _patch_common(
         monkeypatch,
@@ -231,8 +237,14 @@ async def test_run_eval_raises_when_every_case_fails_answer_synthesis(
         extraction_f1_score=None,
     )
 
-    with pytest.raises(RuntimeError, match="Every eval case failed"):
-        await harness_module.run_eval(EvalRunType.MANUAL)
+    run = await harness_module.run_eval(EvalRunType.MANUAL)
+
+    assert run.ragas_faithfulness is None
+    assert run.rouge_l is None
+    assert run.alert_precision is None
+    assert run.extraction_f1 is None
+    assert run.p99_latency_ms is not None
+    assert run.p99_latency_ms >= 0
 
 
 @pytest.mark.asyncio
@@ -521,3 +533,42 @@ def test_score_extraction_case_returns_none_when_extraction_fails(
     monkeypatch.setattr(harness_module, "analyze_node", lambda state: state)  # extraction stays None
 
     assert harness_module._score_extraction_case(case) is None
+
+
+def test_percentile_nearest_rank():
+    values = [10.0, 20.0, 30.0, 40.0, 50.0]
+    assert harness_module._percentile(values, 0.0) == 10.0
+    assert harness_module._percentile(values, 0.99) == 50.0
+    assert harness_module._percentile([42.0], 0.99) == 42.0
+
+
+def test_record_latency_ms_is_a_no_op_outside_of_a_run_eval_call():
+    """No ContextVar set (e.g. a scoring function exercised directly in a
+    unit test, not via run_eval) -> silently does nothing, never raises."""
+    harness_module._record_latency_ms(123.0)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_run_eval_fails_when_p99_latency_exceeds_its_ceiling_target(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """p99_latency_ms is the one metric where a lower value is better — a
+    real regression risk if the generic `value > target` comparison used
+    for every other metric were applied here by mistake."""
+    _patch_db(monkeypatch)
+    _patch_common(monkeypatch, faithfulness_score=0.95, context_recall_score=0.9)
+    over_target_ms = harness_module._target("p99_latency_ms") + 1000
+
+    monkeypatch.setattr(
+        harness_module,
+        "_score_search_case",
+        AsyncMock(
+            side_effect=lambda case, **kwargs: harness_module._record_latency_ms(over_target_ms)
+            or None
+        ),
+    )
+
+    run = await harness_module.run_eval(EvalRunType.MANUAL)
+
+    assert run.p99_latency_ms == pytest.approx(over_target_ms, abs=1)
+    assert run.passed is False
