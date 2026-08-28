@@ -1,0 +1,127 @@
+name: EVAL-07 — Eval Regression Gate
+
+# Separate from ci.yml (FOUND-04) on purpose — this runs the real EVAL-01..04
+# harness (agents/rag/evaluation/prompt-only changes shouldn't have to wait
+# on it otherwise, and it's slower/heavier than lint+unit tests).
+#
+# Runs entirely on free tiers: GitHub-hosted runner minutes, a local Ollama
+# instance started inside the runner (no paid inference), and HuggingFace's
+# free Inference Providers tier for the Triage Agent's zero-shot call (the
+# one real external credential this workflow needs — see HUGGINGFACE_API_TOKEN
+# below). No OpenAI/Anthropic credits are used or required, consistent with
+# this project's cost policy throughout.
+#
+# There is no deploy.yml in this repo (no real deployment epic was ever
+# built — this is a portfolio project, not a live service) — EVAL-07's own
+# ticket calls for this workflow to gate a deploy job, but with nothing to
+# gate, this workflow instead runs as a required PR check on the paths that
+# matter, which is the equivalent gate for a project at this stage.
+"on":
+  pull_request:
+    paths:
+      - "src/regradar/agents/**"
+      - "src/regradar/rag/**"
+      - "src/regradar/evaluation/**"
+      - "src/regradar/llm_routing/**"
+  workflow_dispatch: {}
+
+jobs:
+  eval-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: regradar
+          POSTGRES_PASSWORD: regradar
+          POSTGRES_DB: regradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U regradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Every value below is a fixed, non-secret dummy — this Postgres/Redis
+      # pair is a throwaway per-run container, and none of these services
+      # (S3, SendGrid, SEC EDGAR) are actually called by `regradar run-eval`.
+      # HUGGINGFACE_API_TOKEN is the one real credential (see the Settings
+      # step below) — everything else here only needs to satisfy
+      # core/config.py's required-field validation at import time.
+      ENV: development
+      APP_SECRET_KEY: ci-dummy-secret
+      DATABASE_URL: postgresql+asyncpg://regradar:regradar@localhost:5432/regradar
+      APP_DB_ROLE_PASSWORD: ci-dummy-app-role-password
+      APP_DATABASE_URL: postgresql+asyncpg://regradar_app:ci-dummy-app-role-password@localhost:5432/regradar
+      REDIS_URL: redis://localhost:6379/0
+      S3_BUCKET_NAME: ci-dummy-bucket
+      S3_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ci-dummy
+      AWS_SECRET_ACCESS_KEY: ci-dummy
+      SEC_EDGAR_USER_AGENT: "RegRadar-CI/1.0 (ci@example.com)"
+      OPENAI_API_KEY: ci-dummy
+      # Same small model used as this project's own "low tier" (ADR-05) —
+      # used for BOTH tiers here specifically to keep this workflow's
+      # runtime and download size small; production still uses llama3.1 for
+      # the high tier. A deliberate CI-only substitution, not a real routing
+      # policy change.
+      USE_LOCAL_LLM: "true"
+      LOCAL_LLM_MODEL: llama3.2:1b
+      LOCAL_LLM_LOW_MODEL: llama3.2:1b
+      LOCAL_LLM_BASE_URL: http://localhost:11434/v1
+      USE_LOCAL_EMBEDDINGS: "true"
+      LOCAL_EMBEDDING_MODEL: nomic-embed-text
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install project
+        run: pip install -e ".[dev,eval]"
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Cache Ollama models
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-models-llama3.2-1b-nomic-embed-text
+
+      - name: Start Ollama and pull models
+        run: |
+          ollama serve &
+          for i in $(seq 1 30); do curl -sf http://localhost:11434/api/tags && break; sleep 1; done
+          ollama pull llama3.2:1b
+          ollama pull nomic-embed-text
+
+      - name: Run the eval harness (regradar run-eval)
+        env:
+          # The one real, optional credential this workflow uses. Unset
+          # (e.g. on a fork PR, where GitHub withholds secrets) still runs
+          # the workflow — the Triage Agent's HF call fails gracefully and
+          # alert_precision/alert_recall stay null for that run rather than
+          # the whole job crashing (verified in EVAL-03's own design), so
+          # this isn't a hard requirement for the gate to mean something.
+          HUGGINGFACE_API_TOKEN: ${{ secrets.HUGGINGFACE_API_TOKEN }}
+        run: regradar run-eval --run-type pre_deploy_regression

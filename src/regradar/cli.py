@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import sys
 
 from regradar.core.db import get_session_factory, set_rls_context
 
@@ -104,6 +105,11 @@ def _run_eval(*, run_type: str) -> None:
         f"  p99_latency_ms:       "
         f"{run.p99_latency_ms if run.p99_latency_ms is not None else '(not measured)'}"
     )
+
+    # EVAL-07: a non-zero exit is what lets a CI workflow actually gate on
+    # this — printing "FAILED" to stdout alone doesn't fail a shell step.
+    if not run.passed:
+        sys.exit(1)
 
 
 def _push_prompts() -> None:

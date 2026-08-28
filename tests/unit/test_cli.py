@@ -1,12 +1,13 @@
-"""Tests for the create-api-key CLI command."""
+"""Tests for the create-api-key and run-eval CLI commands."""
 
 import uuid
+from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from regradar import cli as cli_module
-from regradar.models.enums import ApiKeyRole
+from regradar.models.enums import ApiKeyRole, EvalRunType
 
 _DEFAULT_ORG_ID = uuid.uuid4()
 
@@ -80,3 +81,41 @@ def test_create_api_key_without_rate_limit_uses_cli_default(monkeypatch):
     # ORM/DB-level default (SQLAlchemy's mapped_column(default=60) only
     # applies at flush time, which never happens in this mocked test).
     assert inserted.rate_limit_per_minute == 60
+
+
+@dataclass
+class _FakeEvalRun:
+    id: uuid.UUID
+    run_type: EvalRunType
+    passed: bool
+    ragas_faithfulness: float | None = None
+    ragas_context_recall: float | None = None
+    rouge_l: float | None = None
+    alert_precision: float | None = None
+    alert_recall: float | None = None
+    extraction_f1: float | None = None
+    p99_latency_ms: int | None = None
+
+
+def test_run_eval_exits_nonzero_when_run_failed(monkeypatch: pytest.MonkeyPatch):
+    """EVAL-07: a CI workflow gates on the process exit code, not stdout —
+    this is the one thing that actually makes `regradar run-eval` usable as
+    a CI check."""
+    fake_run = _FakeEvalRun(id=uuid.uuid4(), run_type=EvalRunType.MANUAL, passed=False)
+    monkeypatch.setattr(
+        "regradar.evaluation.harness.run_eval", AsyncMock(return_value=fake_run)
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_module._run_eval(run_type="manual")
+
+    assert exc_info.value.code == 1
+
+
+def test_run_eval_exits_zero_when_run_passed(monkeypatch: pytest.MonkeyPatch):
+    fake_run = _FakeEvalRun(id=uuid.uuid4(), run_type=EvalRunType.MANUAL, passed=True)
+    monkeypatch.setattr(
+        "regradar.evaluation.harness.run_eval", AsyncMock(return_value=fake_run)
+    )
+
+    cli_module._run_eval(run_type="manual")  # must not raise SystemExit
