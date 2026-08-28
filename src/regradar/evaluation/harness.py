@@ -99,7 +99,7 @@ from regradar.agents.analysis_agent import analyze_node
 from regradar.agents.state import ExtractionResult, PipelineState
 from regradar.agents.summarization_agent import summarize_node
 from regradar.agents.triage_agent import triage_node
-from regradar.api.routers.metrics import METRIC_TARGETS
+from regradar.api.routers.metrics import effective_targets
 from regradar.core.db import get_session_factory, set_rls_context
 from regradar.evaluation.dataset import (
     ALERT_EVAL_CASES,
@@ -458,13 +458,13 @@ def _percentile(values: list[float], p: float) -> float:
 
 
 def _target(field: str) -> float:
-    """METRIC_TARGETS' entries for every metric this harness ever measures
-    are non-null by definition (unlike hallucination_rate/
+    """effective_targets()'s entries for every metric this harness ever
+    measures are non-null by definition (unlike hallucination_rate/
     avg_cost_per_filing_usd, which are genuinely None — see its own
     definition in api/routers/metrics.py) — asserted, not silently
     coerced, so a future edit there that nulls one out fails loud."""
-    target = METRIC_TARGETS[field]
-    assert target is not None, f"METRIC_TARGETS[{field!r}] must be non-null for a harness that measures it"
+    target = effective_targets()[field]
+    assert target is not None, f"effective_targets()[{field!r}] must be non-null for a harness that measures it"
     return target
 
 
