@@ -169,3 +169,35 @@ async def test_send_email_alert_escapes_html_in_executive_brief(
     assert "<script>" not in html_value
     assert "&lt;script&gt;" in html_value
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_send_email_alert_uses_configured_reply_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DELIV-02's acceptance criteria: reply-to is settings-configured, not
+    hardcoded, and independent of the from-address."""
+    monkeypatch.setenv("SENDGRID_API_KEY", "sg-test-key")
+    monkeypatch.setenv("SENDGRID_FROM_EMAIL", "alerts@regradar.io")
+    monkeypatch.setenv("SENDGRID_REPLY_TO", "support@regradar.io")
+    from regradar.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(202)
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await send_email_alert(
+            recipient="alerts@example.com",
+            entity_name="Acme Corp",
+            filing_type="10-K",
+            risk_level=RiskLevel.HIGH,
+            executive_brief="Filing summary text.",
+        )
+
+    call_kwargs = mock_client.post.call_args.kwargs
+    payload = call_kwargs["json"]
+    assert payload["reply_to"] == {"email": "support@regradar.io"}
+    assert payload["from"] == {"email": "alerts@regradar.io"}
+    get_settings.cache_clear()

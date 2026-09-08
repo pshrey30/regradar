@@ -42,6 +42,7 @@ async def send_email_alert(
     payload = {
         "personalizations": [{"to": [{"email": recipient}]}],
         "from": {"email": settings.sendgrid_from_email},
+        "reply_to": {"email": settings.sendgrid_reply_to},
         "subject": f"RegRadar Alert: {entity_name} — {filing_type}",
         "content": [{"type": "text/html", "value": html_body}],
     }
