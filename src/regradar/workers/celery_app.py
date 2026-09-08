@@ -8,6 +8,7 @@ without needing that config.
 """
 
 from celery import Celery
+from celery.schedules import crontab
 
 from regradar.core.config import get_settings
 
@@ -17,7 +18,7 @@ celery_app = Celery(
     "regradar",
     broker=_settings.redis_url.get_secret_value(),
     backend=_settings.redis_url.get_secret_value(),
-    include=["regradar.workers.pipeline_tasks"],
+    include=["regradar.workers.pipeline_tasks", "regradar.workers.digest_tasks"],
 )
 
 celery_app.conf.update(
@@ -27,3 +28,18 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+# DELIV-03: weekly digest, configurable day/time per its own acceptance
+# criteria. Only takes effect for a process actually running `celery ...
+# beat` — the API/worker processes importing this module don't schedule
+# anything themselves.
+celery_app.conf.beat_schedule = {
+    "send-weekly-digest": {
+        "task": "regradar.workers.digest_tasks.send_weekly_digest",
+        "schedule": crontab(
+            hour=_settings.digest_schedule_hour_utc,
+            minute=0,
+            day_of_week=_settings.digest_schedule_day_of_week,
+        ),
+    },
+}

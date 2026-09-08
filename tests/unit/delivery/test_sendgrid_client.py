@@ -27,7 +27,7 @@ from regradar.models.enums import (
     DeliveryStatus,
     RiskLevel,
 )
-from regradar.delivery.sendgrid_client import send_email_alert
+from regradar.delivery.sendgrid_client import DigestFilingEntry, send_digest_email, send_email_alert
 
 
 def _mock_response(status_code: int, text: str = "") -> MagicMock:
@@ -200,4 +200,66 @@ async def test_send_email_alert_uses_configured_reply_to(monkeypatch: pytest.Mon
     payload = call_kwargs["json"]
     assert payload["reply_to"] == {"email": "support@regradar.io"}
     assert payload["from"] == {"email": "alerts@regradar.io"}
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_send_digest_email_with_filings_lists_them_sorted_critical_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SENDGRID_API_KEY", "sg-test-key")
+    from regradar.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(202)
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+
+    filings = [
+        DigestFilingEntry(entity_name="Acme Corp", risk_level=RiskLevel.HIGH, executive_brief="High risk."),
+        DigestFilingEntry(entity_name="Beta Inc", risk_level=RiskLevel.CRITICAL, executive_brief="Critical."),
+    ]
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        result = await send_digest_email(
+            recipient="digest@example.com", organization_name="Acme Org", filings=filings
+        )
+
+    assert result.status == DeliveryStatus.SENT
+    call_kwargs = mock_client.post.call_args.kwargs
+    payload = call_kwargs["json"]
+    assert "Acme Org" in payload["subject"]
+    html_value = payload["content"][0]["value"]
+    # Critical must render before High, matching the ticket's "sorted by
+    # risk level descending" requirement.
+    assert html_value.index("Beta Inc") < html_value.index("Acme Corp")
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_send_digest_email_with_no_filings_sends_nothing_to_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A week with zero Critical/High filings still sends a short digest —
+    never silently skipped."""
+    monkeypatch.setenv("SENDGRID_API_KEY", "sg-test-key")
+    from regradar.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(202)
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        result = await send_digest_email(
+            recipient="digest@example.com", organization_name="Quiet Org", filings=[]
+        )
+
+    assert result.status == DeliveryStatus.SENT
+    html_value = mock_client.post.call_args.kwargs["json"]["content"][0]["value"]
+    assert "No Critical or High risk filings this week" in html_value
     get_settings.cache_clear()

@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     sendgrid_reply_to: str = Field(default="alerts@regradar.io", alias="SENDGRID_REPLY_TO")
     delivery_email_recipient: str | None = Field(default=None, alias="DELIVERY_EMAIL_RECIPIENT")
     webhook_hmac_algorithm: str = Field(default="sha256", alias="WEBHOOK_HMAC_ALGORITHM")
+    # DELIV-03's acceptance criteria: "configurable day/time". Celery
+    # crontab's day_of_week accepts these names directly.
+    digest_schedule_day_of_week: str = Field(default="monday", alias="DIGEST_SCHEDULE_DAY_OF_WEEK")
+    digest_schedule_hour_utc: int = Field(default=8, alias="DIGEST_SCHEDULE_HOUR_UTC")
 
     # ── Eval & observability ─────────────────────────────────
     langsmith_api_key: SecretStr | None = Field(default=None, alias="LANGSMITH_API_KEY")
