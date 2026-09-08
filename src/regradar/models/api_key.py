@@ -32,6 +32,16 @@ class ApiKey(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    # FE-02: set only for a row created/claimed by an SSO login — see
+    # migration 0014's docstring for why sub (not email) and why a partial
+    # unique index.
+    sso_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sso_subject_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # FE-02: set only for a row created via email/password signup — see
+    # migration 0015's docstring. password_hash is a real bcrypt hash,
+    # never the plaintext password.
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 

@@ -44,6 +44,15 @@ dependencies = [
     # client still raises the same openai.APIConnectionError on a real call
     # failure, just logs a warning first — no new failure mode).
     "langfuse>=3.15,<4",
+    # FE-02: verifies a Google-issued ID token's signature against Google's
+    # real public keys (and its aud/iss/exp claims) server-side — the
+    # actual security boundary of the whole SSO flow, so this can't be a
+    # hand-rolled JWT decode.
+    "google-auth>=2.34,<3",
+    # FE-02: email/password signup — a real, slow, salted hash for a
+    # low-entropy user-chosen secret, unlike core/api_keys.py's fast SHA-256
+    # (correct for a high-entropy random API key, wrong for a password).
+    "bcrypt>=4.2,<5",
 ]
 
 [project.optional-dependencies]

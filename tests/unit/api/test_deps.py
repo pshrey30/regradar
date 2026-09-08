@@ -38,7 +38,7 @@ def _patch_db(monkeypatch: pytest.MonkeyPatch, *, found_row=None):
 
 async def test_missing_header_returns_401():
     with pytest.raises(ApiError) as exc_info:
-        await deps_module.get_current_key(authorization="")
+        await deps_module.get_current_key(authorization="", regradar_session=None)
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.code == "invalid_api_key"
@@ -46,7 +46,7 @@ async def test_missing_header_returns_401():
 
 async def test_malformed_header_returns_401():
     with pytest.raises(ApiError) as exc_info:
-        await deps_module.get_current_key(authorization="not-bearer-format")
+        await deps_module.get_current_key(authorization="not-bearer-format", regradar_session=None)
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.code == "invalid_api_key"
@@ -82,6 +82,35 @@ async def test_valid_active_key_returns_authenticated_key(monkeypatch: pytest.Mo
     assert result.role == ApiKeyRole.ANALYST
     assert result.owner_label == "test-owner"
     assert result.rate_limit_per_minute == 60
+
+
+async def test_session_cookie_authenticates_like_a_bearer_key(monkeypatch: pytest.MonkeyPatch):
+    """FE-02: a regradar_session cookie authenticates through the exact
+    same lookup as an Authorization header — no separate cookie-specific
+    code path to drift out of sync."""
+    row = _mock_row(is_active=True, role=ApiKeyRole.ANALYST)
+    _patch_db(monkeypatch, found_row=row)
+
+    result = await deps_module.get_current_key(authorization="", regradar_session="rr_valid-session-key")
+
+    assert result.id == row.id
+    assert result.role == ApiKeyRole.ANALYST
+
+
+async def test_authorization_header_takes_priority_over_cookie(monkeypatch: pytest.MonkeyPatch):
+    row = _mock_row()
+    mock_db = _patch_db(monkeypatch, found_row=row)
+
+    await deps_module.get_current_key(
+        authorization="Bearer rr_header-key", regradar_session="rr_cookie-key"
+    )
+
+    from regradar.core.api_keys import hash_api_key
+
+    executed_where = mock_db.execute.call_args.args[0]
+    compiled = str(executed_where.compile(compile_kwargs={"literal_binds": True}))
+    assert hash_api_key("rr_header-key") in compiled
+    assert hash_api_key("rr_cookie-key") not in compiled
 
 
 async def test_valid_key_updates_last_used_at(monkeypatch: pytest.MonkeyPatch):

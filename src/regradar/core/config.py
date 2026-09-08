@@ -143,6 +143,24 @@ class Settings(BaseSettings):
     )
     api_key_hash_algorithm: str = Field(default="sha256", alias="API_KEY_HASH_ALGORITHM")
 
+    # ── FE-02: SSO login ─────────────────────────────────────
+    # No real Google Cloud OAuth app was provisioned for the ticket itself
+    # (portfolio project, ADR-06) — real credentials were provided directly
+    # by the project owner and live-verified against a real Google account.
+    google_client_id: str | None = Field(default=None, alias="GOOGLE_CLIENT_ID")
+    google_client_secret: SecretStr | None = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
+    google_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/v1/auth/google/callback", alias="GOOGLE_OAUTH_REDIRECT_URI"
+    )
+    # Where the callback sends the browser after a successful login —
+    # deliberately separate from GOOGLE_OAUTH_REDIRECT_URI (Google's own,
+    # backend-only redirect target) so the two can differ freely (e.g. a
+    # deployed frontend on a different host than the API).
+    frontend_base_url: str = Field(default="http://localhost:5173", alias="FRONTEND_BASE_URL")
+    session_cookie_max_age_seconds: int = Field(
+        default=7 * 24 * 60 * 60, alias="SESSION_COOKIE_MAX_AGE_SECONDS"
+    )
+
     # ── Deployment ────────────────────────────────────────────
     fly_app_name_api: str = Field(default="regradar-api", alias="FLY_APP_NAME_API")
     fly_app_name_worker: str = Field(default="regradar-worker", alias="FLY_APP_NAME_WORKER")

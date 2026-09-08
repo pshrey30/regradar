@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import Header
+from fastapi import Cookie, Header
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -28,18 +28,28 @@ class AuthenticatedKey(BaseModel):
     rate_limit_per_minute: int
 
 
-async def get_current_key(authorization: str = Header(default="")) -> AuthenticatedKey:
-    """Resolve the calling API key from the Authorization header.
+async def get_current_key(
+    authorization: str = Header(default=""),
+    regradar_session: str | None = Cookie(default=None),
+) -> AuthenticatedKey:
+    """Resolve the calling API key from the Authorization header, or (FE-02)
+    the regradar_session cookie a Google SSO login set.
 
     Raises ApiError(401) for a missing, malformed, unknown, or revoked key —
     deliberately the same error in every case, so a caller can't use the
     response to distinguish "this key doesn't exist" from "this key was
-    revoked".
+    revoked". Both credential sources resolve through this exact same
+    lookup/RLS/rate-limit path — a session cookie's raw value IS a regular
+    API key (see api/routers/auth.py), so there's nothing cookie-specific
+    to duplicate here.
     """
-    if not authorization.startswith("Bearer "):
-        raise _INVALID_KEY_ERROR
+    if authorization.startswith("Bearer "):
+        presented_key = authorization.removeprefix("Bearer ").strip()
+    elif regradar_session:
+        presented_key = regradar_session
+    else:
+        presented_key = ""
 
-    presented_key = authorization.removeprefix("Bearer ").strip()
     if not presented_key:
         raise _INVALID_KEY_ERROR
 
