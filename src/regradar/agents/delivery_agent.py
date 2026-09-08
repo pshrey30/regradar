@@ -28,12 +28,17 @@ Two things this node deliberately does NOT do, and why:
   filing.status; this node signals "delivery ran" via
   state.delivery_status being non-None, which pipeline_tasks.py reads.
 
-No organization concept exists in the schema (SEC-05 is a separate,
-deferred ticket) — Slack and email are single global destinations
-(settings.slack_webhook_url / settings.delivery_email_recipient), not
-per-organization. Webhook fan-out is "every active Webhook row whose
-filter_domain/filter_min_risk matches this filing" — webhooks are scoped
-to api_key_id, not to any tenant.
+DELIV-01: the Slack webhook URL is read per-organization from
+`organization_delivery_settings` (SEC-05's `organizations` table plus
+this ticket's own settings table), not from a single global env var —
+AGENT-10's original single-destination design predated SEC-05's
+`organizations` table entirely. Email still reads from
+settings.delivery_email_recipient (a single global destination) —
+DELIV-01's own acceptance criteria only require per-org storage for
+Slack; DELIV-02 (SendGrid) is a separate, not-yet-built ticket. Webhook
+fan-out is "every active Webhook row whose filter_domain/filter_min_risk
+matches this filing" — webhooks are scoped to api_key_id, not to any
+tenant.
 """
 
 import logging
@@ -45,6 +50,7 @@ from sqlalchemy import select
 
 from regradar.agents.state import PipelineState
 from regradar.core.config import get_settings
+from regradar.core.db import set_rls_context
 from regradar.delivery.sendgrid_client import send_email_alert
 from regradar.delivery.slack_client import send_slack_alert
 from regradar.delivery.types import DeliveryResult
@@ -52,6 +58,7 @@ from regradar.delivery.webhook_dispatcher import WebhookValidationError, send_we
 from regradar.models.delivery import Delivery
 from regradar.models.enums import DeliveryChannel, DeliveryStatus, FilingDomain, RiskLevel
 from regradar.models.filing import Filing
+from regradar.models.organization_delivery_settings import OrganizationDeliverySettings
 from regradar.models.webhook import Webhook
 
 logger = logging.getLogger(__name__)
@@ -87,6 +94,17 @@ async def _record_delivery(
     result: DeliveryResult,
     webhook_id: Any = None,
 ) -> None:
+    # Real bug found via DELIV-01 live verification: set_rls_context's
+    # set_config(..., true) is transaction-scoped and this function commits
+    # after every channel — on a pooled connection that's ever touched the
+    # GUC before, it reverts to '' (not NULL) once that transaction ends
+    # (the same real Postgres behavior SEC-01 already documented), so the
+    # *second* channel's insert in one deliver_node run was silently denied
+    # by RLS. Re-asserting the context before every write is cheap (two
+    # tiny set_config calls) and keeps each channel's Delivery row durable
+    # immediately, which is why this commits per-channel instead of once
+    # at the end of deliver_node.
+    await set_rls_context(db, role="service")
     db.add(
         Delivery(
             organization_id=organization_id,
@@ -116,6 +134,8 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
         logger.warning("Filing %s not found; skipping delivery", state.filing_id)
         return state
 
+    delivery_settings = await db.get(OrganizationDeliverySettings, filing.organization_id)
+
     existing = await db.execute(
         select(Delivery).where(
             Delivery.filing_id == state.filing_id, Delivery.status == DeliveryStatus.SENT
@@ -128,8 +148,8 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
 
     # --- Slack ---
     if (DeliveryChannel.SLACK, None) not in already_sent:
-        if settings.slack_webhook_url:
-            slack_url = settings.slack_webhook_url.get_secret_value()
+        slack_url = delivery_settings.slack_webhook_url if delivery_settings else None
+        if slack_url:
             try:
                 result = await send_slack_alert(
                     webhook_url=slack_url,

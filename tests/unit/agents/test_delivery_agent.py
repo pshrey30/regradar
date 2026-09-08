@@ -2,7 +2,9 @@
 
 All HTTP clients (Slack/SendGrid/webhook) are mocked at the send_*_alert
 function boundary — no real network calls. The DB session is an AsyncMock,
-matching the pattern in test_pipeline_tasks.py.
+matching the pattern in test_pipeline_tasks.py. Slack "configured" is
+expressed via an OrganizationDeliverySettings row (DELIV-01: per-org, not
+a global env var) returned from the second db.get() call.
 """
 
 import os
@@ -28,7 +30,10 @@ from regradar.agents.state import BriefSet, PipelineState
 from regradar.delivery.types import DeliveryResult
 from regradar.models.enums import DeliveryChannel, DeliveryStatus, FilingDomain, RiskLevel
 from regradar.models.filing import Filing
+from regradar.models.organization_delivery_settings import OrganizationDeliverySettings
 from regradar.models.webhook import Webhook
+
+_SLACK_URL = "https://hooks.slack.com/services/T/B/X"
 
 
 @pytest.fixture(autouse=True)
@@ -66,15 +71,38 @@ def _make_filing(filing_id: uuid.UUID) -> MagicMock:
     return filing
 
 
-def _make_db(filing: MagicMock, existing_deliveries: list, webhooks: list) -> AsyncMock:
+def _make_delivery_settings(slack_webhook_url: str | None) -> MagicMock:
+    settings_row = MagicMock(spec=OrganizationDeliverySettings)
+    settings_row.slack_webhook_url = slack_webhook_url
+    return settings_row
+
+
+def _make_db(
+    filing: MagicMock,
+    existing_deliveries: list,
+    webhooks: list,
+    *,
+    delivery_settings: MagicMock | None = None,
+) -> AsyncMock:
     db = AsyncMock()
-    db.get = AsyncMock(return_value=filing)
+    db.get = AsyncMock(side_effect=[filing, delivery_settings])
 
     deliveries_result = MagicMock()
     deliveries_result.scalars.return_value.all.return_value = existing_deliveries
     webhooks_result = MagicMock()
     webhooks_result.scalars.return_value.all.return_value = webhooks
-    db.execute = AsyncMock(side_effect=[deliveries_result, webhooks_result])
+    query_results = iter([deliveries_result, webhooks_result])
+
+    async def _execute(stmt, *args, **kwargs):
+        # set_rls_context re-asserts the RLS GUCs before every _record_delivery
+        # commit (see delivery_agent.py's comment) — those set_config calls
+        # aren't real queries and must not consume the deliveries/webhooks
+        # query_results queue.
+        if "set_config" in getattr(stmt, "text", ""):
+            return MagicMock()
+        return next(query_results)
+
+    db.execute = AsyncMock(side_effect=_execute)
     db.add = MagicMock()
     db.commit = AsyncMock()
     return db
@@ -99,11 +127,15 @@ async def test_deliver_node_skips_when_briefs_missing() -> None:
 async def test_deliver_node_sends_slack_when_configured_and_unsent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state()
     filing = _make_filing(state.filing_id)
-    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
 
     with patch(
         "regradar.agents.delivery_agent.send_slack_alert",
@@ -125,11 +157,10 @@ async def test_deliver_node_sends_slack_when_configured_and_unsent(
 async def test_deliver_node_skips_slack_when_not_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state()
     filing = _make_filing(state.filing_id)
-    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+    db = _make_db(filing, existing_deliveries=[], webhooks=[], delivery_settings=None)
 
     with patch("regradar.agents.delivery_agent.send_slack_alert", new=AsyncMock()) as mock_slack:
         result = await deliver_node(state, _config(db))
@@ -140,17 +171,45 @@ async def test_deliver_node_skips_slack_when_not_configured(
 
 
 @pytest.mark.asyncio
+async def test_deliver_node_skips_slack_when_org_row_exists_but_url_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An organization_delivery_settings row can exist with slack_webhook_url
+    left null (an org that's configured email but not Slack) — that must
+    behave identically to no row existing at all, not crash on None."""
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    state = _make_state()
+    filing = _make_filing(state.filing_id)
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(None),
+    )
+
+    with patch("regradar.agents.delivery_agent.send_slack_alert", new=AsyncMock()) as mock_slack:
+        result = await deliver_node(state, _config(db))
+
+    mock_slack.assert_not_awaited()
+    assert "slack=not_configured" in result.delivery_status
+
+
+@pytest.mark.asyncio
 async def test_deliver_node_does_not_resend_already_sent_slack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state()
     filing = _make_filing(state.filing_id)
     existing = MagicMock()
     existing.channel = DeliveryChannel.SLACK
     existing.webhook_id = None
-    db = _make_db(filing, existing_deliveries=[existing], webhooks=[])
+    db = _make_db(
+        filing,
+        existing_deliveries=[existing],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
 
     with patch("regradar.agents.delivery_agent.send_slack_alert", new=AsyncMock()) as mock_slack:
         result = await deliver_node(state, _config(db))
@@ -163,11 +222,15 @@ async def test_deliver_node_does_not_resend_already_sent_slack(
 async def test_deliver_node_records_failed_row_when_slack_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state()
     filing = _make_filing(state.filing_id)
-    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
 
     with patch(
         "regradar.agents.delivery_agent.send_slack_alert",
@@ -188,12 +251,16 @@ async def test_deliver_node_uses_state_risk_level_not_stale_filing_risk_level(
     """The filing row fetched inside deliver_node has stale domain/risk_level
     (pipeline_tasks.py only sets them AFTER ainvoke() returns) — deliver_node
     must build content from state.risk_level, not filing.risk_level."""
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state(risk_level=RiskLevel.CRITICAL)
     filing = _make_filing(state.filing_id)
     filing.risk_level = None  # stale DB value — this run hasn't been persisted yet
-    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
 
     with patch(
         "regradar.agents.delivery_agent.send_slack_alert",
@@ -209,7 +276,6 @@ async def test_deliver_node_uses_state_risk_level_not_stale_filing_risk_level(
 async def test_deliver_node_sends_to_matching_active_webhook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state(risk_level=RiskLevel.HIGH)
     filing = _make_filing(state.filing_id)
@@ -220,7 +286,7 @@ async def test_deliver_node_sends_to_matching_active_webhook(
     webhook.is_active = True
     webhook.filter_domain = None
     webhook.filter_min_risk = None
-    db = _make_db(filing, existing_deliveries=[], webhooks=[webhook])
+    db = _make_db(filing, existing_deliveries=[], webhooks=[webhook], delivery_settings=None)
 
     with patch(
         "regradar.agents.delivery_agent.send_webhook_alert",
@@ -244,11 +310,10 @@ async def test_deliver_node_scopes_webhook_query_to_filings_own_organization(
     cross-org write access), so deliver_node's own webhook query must
     filter by organization_id explicitly — otherwise a filing would fan
     out to every organization's registered webhooks, not just its own."""
-    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state(risk_level=RiskLevel.HIGH)
     filing = _make_filing(state.filing_id)
-    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+    db = _make_db(filing, existing_deliveries=[], webhooks=[], delivery_settings=None)
 
     await deliver_node(state, _config(db))
 
@@ -262,7 +327,6 @@ async def test_deliver_node_scopes_webhook_query_to_filings_own_organization(
 async def test_deliver_node_skips_webhook_with_non_matching_filter_min_risk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state(risk_level=RiskLevel.LOW)
     filing = _make_filing(state.filing_id)
@@ -273,7 +337,7 @@ async def test_deliver_node_skips_webhook_with_non_matching_filter_min_risk(
     webhook.is_active = True
     webhook.filter_domain = None
     webhook.filter_min_risk = RiskLevel.HIGH
-    db = _make_db(filing, existing_deliveries=[], webhooks=[webhook])
+    db = _make_db(filing, existing_deliveries=[], webhooks=[webhook], delivery_settings=None)
 
     with patch(
         "regradar.agents.delivery_agent.send_webhook_alert", new=AsyncMock()
@@ -293,7 +357,6 @@ async def test_deliver_node_skips_webhook_with_non_matching_filter_min_risk(
 async def test_deliver_node_records_failed_row_on_webhook_validation_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state()
     filing = _make_filing(state.filing_id)
@@ -304,7 +367,7 @@ async def test_deliver_node_records_failed_row_on_webhook_validation_error(
     webhook.is_active = True
     webhook.filter_domain = None
     webhook.filter_min_risk = None
-    db = _make_db(filing, existing_deliveries=[], webhooks=[webhook])
+    db = _make_db(filing, existing_deliveries=[], webhooks=[webhook], delivery_settings=None)
 
     from regradar.delivery.webhook_dispatcher import WebhookValidationError
 
@@ -323,12 +386,16 @@ async def test_deliver_node_records_failed_row_on_webhook_validation_error(
 async def test_deliver_node_one_channel_failure_does_not_block_others(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
     monkeypatch.setenv("SENDGRID_API_KEY", "sg-test-key")
     monkeypatch.setenv("DELIVERY_EMAIL_RECIPIENT", "alerts@example.com")
     state = _make_state()
     filing = _make_filing(state.filing_id)
-    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
 
     with (
         patch(
@@ -354,11 +421,15 @@ async def test_deliver_node_delivery_success_false_when_nothing_sent(
     """When every configured channel fails (or nothing is configured/matches),
     delivery_success must be False (a definite "ran but sent nothing"
     signal), not None (which is reserved for "didn't run at all")."""
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state()
     filing = _make_filing(state.filing_id)
-    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
 
     with patch(
         "regradar.agents.delivery_agent.send_slack_alert",
@@ -374,11 +445,15 @@ async def test_deliver_node_delivery_success_false_when_nothing_sent(
 async def test_deliver_node_delivery_success_true_when_one_channel_sent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     state = _make_state()
     filing = _make_filing(state.filing_id)
-    db = _make_db(filing, existing_deliveries=[], webhooks=[])
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
 
     with patch(
         "regradar.agents.delivery_agent.send_slack_alert",

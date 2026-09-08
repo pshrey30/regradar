@@ -103,7 +103,9 @@ class Settings(BaseSettings):
     prefect_api_key: SecretStr | None = Field(default=None, alias="PREFECT_API_KEY")
 
     # ── Delivery ─────────────────────────────────────────────
-    slack_webhook_url: SecretStr | None = Field(default=None, alias="SLACK_WEBHOOK_URL")
+    # No slack_webhook_url field: DELIV-01 moved it to a per-organization
+    # DB row (organization_delivery_settings) instead of a single global
+    # setting — see agents/delivery_agent.py's module docstring.
     slack_bot_token: SecretStr | None = Field(default=None, alias="SLACK_BOT_TOKEN")
     sendgrid_api_key: SecretStr | None = Field(default=None, alias="SENDGRID_API_KEY")
     sendgrid_from_email: str = Field(default="alerts@regradar.io", alias="SENDGRID_FROM_EMAIL")

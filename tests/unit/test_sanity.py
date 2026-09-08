@@ -18,6 +18,7 @@ def test_all_models_register_on_base_metadata() -> None:
         "filing_chunks",
         "filings",
         "organizations",
+        "organization_delivery_settings",
         "source_configs",
         "webhooks",
     }
