@@ -45,6 +45,18 @@ def _clear_settings_cache():
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _mock_redis_client():
+    """DELIV-04's Slack-failure-streak tracking needs a Redis client —
+    faked here so every existing test doesn't need a real one."""
+    mock_client = AsyncMock()
+    mock_client.incr = AsyncMock(return_value=1)
+    mock_client.expire = AsyncMock()
+    mock_client.delete = AsyncMock()
+    with patch("regradar.agents.delivery_agent.get_redis_client", return_value=mock_client):
+        yield mock_client
+
+
 def _make_state(risk_level: RiskLevel = RiskLevel.HIGH) -> PipelineState:
     return PipelineState(
         filing_id=uuid.uuid4(),
@@ -462,3 +474,254 @@ async def test_deliver_node_delivery_success_true_when_one_channel_sent(
         result = await deliver_node(state, _config(db))
 
     assert result.delivery_success is True
+
+
+# --- DELIV-04: Slack failure fallback ---
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_falls_back_to_email_when_slack_fails_and_no_primary_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    monkeypatch.setenv("ADMIN_FALLBACK_EMAIL", "admin@example.com")
+    state = _make_state(risk_level=RiskLevel.HIGH)
+    filing = _make_filing(state.filing_id)
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
+
+    with (
+        patch(
+            "regradar.agents.delivery_agent.send_slack_alert",
+            new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.FAILED, response_code=500)),
+        ),
+        patch(
+            "regradar.agents.delivery_agent.send_email_alert",
+            new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=202)),
+        ) as mock_email,
+    ):
+        result = await deliver_node(state, _config(db))
+
+    mock_email.assert_awaited_once()
+    assert mock_email.call_args.kwargs["recipient"] == "admin@example.com"
+    assert "email_fallback=sent" in result.delivery_status
+    fallback_rows = [
+        call.args[0] for call in db.add.call_args_list if call.args[0].is_fallback
+    ]
+    assert len(fallback_rows) == 1
+    assert fallback_rows[0].channel == DeliveryChannel.EMAIL
+    assert fallback_rows[0].recipient == "admin@example.com"
+    assert fallback_rows[0].status == DeliveryStatus.SENT
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_falls_back_to_email_when_slack_not_configured_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    monkeypatch.setenv("ADMIN_FALLBACK_EMAIL", "admin@example.com")
+    state = _make_state(risk_level=RiskLevel.CRITICAL)
+    filing = _make_filing(state.filing_id)
+    db = _make_db(filing, existing_deliveries=[], webhooks=[], delivery_settings=None)
+
+    with patch(
+        "regradar.agents.delivery_agent.send_email_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=202)),
+    ) as mock_email:
+        result = await deliver_node(state, _config(db))
+
+    mock_email.assert_awaited_once()
+    assert "slack=not_configured" in result.delivery_status
+    assert "email_fallback=sent" in result.delivery_status
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_no_fallback_when_primary_email_already_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The normal email channel already attempts independently of Slack's
+    outcome — a fallback here would just be a duplicate send."""
+    monkeypatch.setenv("SENDGRID_API_KEY", "sg-test-key")
+    monkeypatch.setenv("DELIVERY_EMAIL_RECIPIENT", "alerts@example.com")
+    monkeypatch.setenv("ADMIN_FALLBACK_EMAIL", "admin@example.com")
+    state = _make_state(risk_level=RiskLevel.HIGH)
+    filing = _make_filing(state.filing_id)
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
+
+    with (
+        patch(
+            "regradar.agents.delivery_agent.send_slack_alert",
+            new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.FAILED, response_code=500)),
+        ),
+        patch(
+            "regradar.agents.delivery_agent.send_email_alert",
+            new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=202)),
+        ) as mock_email,
+    ):
+        result = await deliver_node(state, _config(db))
+
+    mock_email.assert_awaited_once()  # the normal email branch's one call, not a fallback
+    assert "email_fallback" not in result.delivery_status
+    assert "email=sent" in result.delivery_status
+    assert not any(call.args[0].is_fallback for call in db.add.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_no_fallback_for_low_risk_filing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    monkeypatch.setenv("ADMIN_FALLBACK_EMAIL", "admin@example.com")
+    state = _make_state(risk_level=RiskLevel.LOW)
+    filing = _make_filing(state.filing_id)
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
+
+    with (
+        patch(
+            "regradar.agents.delivery_agent.send_slack_alert",
+            new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.FAILED, response_code=500)),
+        ),
+        patch("regradar.agents.delivery_agent.send_email_alert", new=AsyncMock()) as mock_email,
+    ):
+        result = await deliver_node(state, _config(db))
+
+    mock_email.assert_not_awaited()
+    assert "email_fallback" not in result.delivery_status
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_fallback_not_configured_when_admin_fallback_email_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    monkeypatch.delenv("ADMIN_FALLBACK_EMAIL", raising=False)
+    state = _make_state(risk_level=RiskLevel.CRITICAL)
+    filing = _make_filing(state.filing_id)
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
+
+    with (
+        patch(
+            "regradar.agents.delivery_agent.send_slack_alert",
+            new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.FAILED, response_code=500)),
+        ),
+        patch("regradar.agents.delivery_agent.send_email_alert", new=AsyncMock()) as mock_email,
+    ):
+        result = await deliver_node(state, _config(db))
+
+    mock_email.assert_not_awaited()
+    assert "email_fallback=not_configured" in result.delivery_status
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_increments_slack_failure_streak_on_failure(
+    monkeypatch: pytest.MonkeyPatch, _mock_redis_client: AsyncMock
+) -> None:
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    state = _make_state(risk_level=RiskLevel.LOW)  # risk level irrelevant to streak tracking
+    filing = _make_filing(state.filing_id)
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
+
+    with patch(
+        "regradar.agents.delivery_agent.send_slack_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.FAILED, response_code=500)),
+    ):
+        await deliver_node(state, _config(db))
+
+    _mock_redis_client.incr.assert_awaited_once_with(f"slack_failure_streak:{filing.organization_id}")
+    _mock_redis_client.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_resets_slack_failure_streak_on_success(
+    monkeypatch: pytest.MonkeyPatch, _mock_redis_client: AsyncMock
+) -> None:
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    state = _make_state()
+    filing = _make_filing(state.filing_id)
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=_make_delivery_settings(_SLACK_URL),
+    )
+
+    with patch(
+        "regradar.agents.delivery_agent.send_slack_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=200)),
+    ):
+        await deliver_node(state, _config(db))
+
+    _mock_redis_client.delete.assert_awaited_once_with(f"slack_failure_streak:{filing.organization_id}")
+    _mock_redis_client.incr.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_does_not_touch_streak_when_slack_not_configured(
+    monkeypatch: pytest.MonkeyPatch, _mock_redis_client: AsyncMock
+) -> None:
+    monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+    state = _make_state(risk_level=RiskLevel.LOW)
+    filing = _make_filing(state.filing_id)
+    db = _make_db(filing, existing_deliveries=[], webhooks=[], delivery_settings=None)
+
+    await deliver_node(state, _config(db))
+
+    _mock_redis_client.incr.assert_not_awaited()
+    _mock_redis_client.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_record_slack_failure_logs_reconnection_needed_at_threshold(
+    _mock_redis_client: AsyncMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    from regradar.agents.delivery_agent import (
+        _SLACK_RECONNECTION_THRESHOLD,
+        _record_slack_failure_and_maybe_notify,
+    )
+
+    org_id = uuid.uuid4()
+    _mock_redis_client.incr = AsyncMock(return_value=_SLACK_RECONNECTION_THRESHOLD)
+
+    with caplog.at_level("ERROR", logger="regradar.agents.delivery_agent"):
+        await _record_slack_failure_and_maybe_notify(org_id)
+
+    assert any("Slack reconnection needed" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_record_slack_failure_does_not_log_below_threshold(
+    _mock_redis_client: AsyncMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    from regradar.agents.delivery_agent import _record_slack_failure_and_maybe_notify
+
+    org_id = uuid.uuid4()
+    _mock_redis_client.incr = AsyncMock(return_value=1)
+
+    with caplog.at_level("ERROR", logger="regradar.agents.delivery_agent"):
+        await _record_slack_failure_and_maybe_notify(org_id)
+
+    assert not any("Slack reconnection needed" in record.message for record in caplog.records)

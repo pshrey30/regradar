@@ -120,6 +120,12 @@ class Settings(BaseSettings):
     # crontab's day_of_week accepts these names directly.
     digest_schedule_day_of_week: str = Field(default="monday", alias="DIGEST_SCHEDULE_DAY_OF_WEEK")
     digest_schedule_hour_utc: int = Field(default=8, alias="DIGEST_SCHEDULE_HOUR_UTC")
+    # DELIV-04: "fall back to a designated admin contact email if no other
+    # is configured" — deliberately separate from delivery_email_recipient
+    # (the primary email channel's destination), since the whole point of
+    # this fallback is reaching an org that has no primary email channel
+    # configured at all.
+    admin_fallback_email: str | None = Field(default=None, alias="ADMIN_FALLBACK_EMAIL")
 
     # ── Eval & observability ─────────────────────────────────
     langsmith_api_key: SecretStr | None = Field(default=None, alias="LANGSMITH_API_KEY")

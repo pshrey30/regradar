@@ -39,6 +39,20 @@ Slack; DELIV-02 (SendGrid) is a separate, not-yet-built ticket. Webhook
 fan-out is "every active Webhook row whose filter_domain/filter_min_risk
 matches this filing" — webhooks are scoped to api_key_id, not to any
 tenant.
+
+DELIV-04: a Critical/High filing whose Slack attempt fails, or whose
+organization has no Slack webhook configured at all, automatically gets
+an email fallback attempt via settings.admin_fallback_email — but only
+when the normal email channel isn't already configured (sendgrid_api_key
++ delivery_email_recipient). If it is, that channel already tries
+independently of Slack's outcome, so a redundant fallback send to the
+same global recipient would just be a duplicate, not a real gap being
+closed. The fallback is recorded as its own Delivery row with
+is_fallback=True. Separately, a Redis-backed per-organization counter
+tracks *consecutive real Slack failures* (not "never configured" — a
+"reconnect Slack" nudge only makes sense for an integration that was
+working and started failing) and logs a distinct reconnection-needed
+event after 3 in a row, resetting to 0 on the next success.
 """
 
 import logging
@@ -51,6 +65,7 @@ from sqlalchemy import select
 from regradar.agents.state import PipelineState
 from regradar.core.config import get_settings
 from regradar.core.db import set_rls_context
+from regradar.core.redis_client import get_redis_client
 from regradar.delivery.sendgrid_client import send_email_alert
 from regradar.delivery.slack_client import send_slack_alert
 from regradar.delivery.types import DeliveryResult
@@ -69,6 +84,35 @@ _RISK_ORDER: dict[RiskLevel, int] = {
     RiskLevel.HIGH: 2,
     RiskLevel.CRITICAL: 3,
 }
+
+_FALLBACK_RISK_LEVELS = (RiskLevel.HIGH, RiskLevel.CRITICAL)
+_SLACK_RECONNECTION_THRESHOLD = 3
+_SLACK_FAILURE_STREAK_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days — hygiene, not a real expectation
+
+
+def _slack_failure_streak_key(organization_id: Any) -> str:
+    return f"slack_failure_streak:{organization_id}"
+
+
+async def _record_slack_failure_and_maybe_notify(organization_id: Any) -> None:
+    client = get_redis_client()
+    key = _slack_failure_streak_key(organization_id)
+    streak = await client.incr(key)
+    await client.expire(key, _SLACK_FAILURE_STREAK_TTL_SECONDS)
+    if streak >= _SLACK_RECONNECTION_THRESHOLD:
+        # Stub notification hook for V1, matching EVAL-06's own
+        # cost-alert stub precedent — a future ticket wires this to a
+        # real admin-facing channel (email/Slack-to-the-team/etc).
+        logger.error(
+            "Slack reconnection needed for organization %s — %d consecutive failed deliveries",
+            organization_id,
+            streak,
+        )
+
+
+async def _reset_slack_failure_streak(organization_id: Any) -> None:
+    client = get_redis_client()
+    await client.delete(_slack_failure_streak_key(organization_id))
 
 
 def _webhook_matches(
@@ -93,6 +137,8 @@ async def _record_delivery(
     recipient: str,
     result: DeliveryResult,
     webhook_id: Any = None,
+    *,
+    is_fallback: bool = False,
 ) -> None:
     # Real bug found via DELIV-01 live verification: set_rls_context's
     # set_config(..., true) is transaction-scoped and this function commits
@@ -115,6 +161,7 @@ async def _record_delivery(
             status=result.status,
             response_code=result.response_code,
             attempt_count=1,
+            is_fallback=is_fallback,
             sent_at=datetime.now(UTC) if result.status == DeliveryStatus.SENT else None,
         )
     )
@@ -147,9 +194,12 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
     any_sent = False
 
     # --- Slack ---
+    slack_attempted = False
+    slack_failed = False
     if (DeliveryChannel.SLACK, None) not in already_sent:
         slack_url = delivery_settings.slack_webhook_url if delivery_settings else None
         if slack_url:
+            slack_attempted = True
             try:
                 result = await send_slack_alert(
                     webhook_url=slack_url,
@@ -168,9 +218,55 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
             )
             if result.status == DeliveryStatus.SENT:
                 any_sent = True
+            else:
+                slack_failed = True
             statuses.append(f"slack={result.status.value}")
         else:
             statuses.append("slack=not_configured")
+
+    if slack_attempted:
+        if slack_failed:
+            await _record_slack_failure_and_maybe_notify(filing.organization_id)
+        else:
+            await _reset_slack_failure_streak(filing.organization_id)
+
+    # --- Slack failure fallback (DELIV-04) ---
+    # Only when the normal email channel isn't already configured — if it
+    # is, it already attempts independently of Slack's outcome below, so a
+    # second send to the same global recipient would just be a duplicate.
+    primary_email_configured = bool(settings.sendgrid_api_key and settings.delivery_email_recipient)
+    if (
+        state.risk_level in _FALLBACK_RISK_LEVELS
+        and (slack_failed or not slack_attempted)
+        and not primary_email_configured
+        and (DeliveryChannel.EMAIL, None) not in already_sent
+    ):
+        if settings.admin_fallback_email:
+            try:
+                result = await send_email_alert(
+                    recipient=settings.admin_fallback_email,
+                    entity_name=filing.entity_name,
+                    filing_type=filing.filing_type,
+                    risk_level=state.risk_level,
+                    executive_brief=state.briefs.executive_brief,
+                )
+            except Exception as exc:  # noqa: BLE001 — see Slack's comment above
+                logger.warning("Fallback email delivery raised for filing %s: %s", state.filing_id, exc)
+                result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+            await _record_delivery(
+                db,
+                filing.id,
+                filing.organization_id,
+                DeliveryChannel.EMAIL,
+                settings.admin_fallback_email,
+                result,
+                is_fallback=True,
+            )
+            if result.status == DeliveryStatus.SENT:
+                any_sent = True
+            statuses.append(f"email_fallback={result.status.value}")
+        else:
+            statuses.append("email_fallback=not_configured")
 
     # --- Email ---
     if (DeliveryChannel.EMAIL, None) not in already_sent:
