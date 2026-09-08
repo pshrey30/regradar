@@ -22,7 +22,7 @@ from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
 from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.models.brief import Brief
-from regradar.models.enums import ApiKeyRole, FilingDomain, FilingStatus, RiskLevel
+from regradar.models.enums import ApiKeyRole, FilingDomain, FilingSource, FilingStatus, RiskLevel
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
 from regradar.rag.answer_synthesis import SEARCH_EXCERPT_MAX_CHARS, synthesize_answer
@@ -55,15 +55,26 @@ def _build_filters(
     role: ApiKeyRole,
     domain: FilingDomain | None,
     risk: RiskLevel | None,
+    source: FilingSource | None,
     since: datetime | None,
+    until: datetime | None,
 ) -> list:
+    # Same tz-naive-vs-TIMESTAMP(timezone=True) normalization API-04's own
+    # final review already established for `since` — applied to `until`
+    # too now that it exists, so this filter doesn't reintroduce the exact
+    # bug class the api-audit-post-sec05 pass found and fixed once already.
     if since is not None and since.tzinfo is None:
         since = since.replace(tzinfo=UTC)
+    if until is not None and until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
 
     filters: list = [Filing.status == FilingStatus.COMPLETE]
 
     if domain is not None:
         filters.append(Filing.domain == domain)
+
+    if source is not None:
+        filters.append(Filing.source == source)
 
     if role == ApiKeyRole.EXECUTIVE:
         # Intersect the requested risk (or "any") with the Executive-allowed
@@ -82,6 +93,9 @@ def _build_filters(
     if since is not None:
         filters.append(Filing.published_at >= since)
 
+    if until is not None:
+        filters.append(Filing.published_at <= until)
+
     return filters
 
 
@@ -91,11 +105,15 @@ async def list_filings(
     db: AsyncSession = Depends(get_authenticated_db),
     domain: FilingDomain | None = Query(default=None),
     risk: RiskLevel | None = Query(default=None),
+    source: FilingSource | None = Query(default=None),
     since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
     page: int = Query(default=1, ge=1, le=100_000),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> FilingListResponse:
-    filters = _build_filters(role=key.role, domain=domain, risk=risk, since=since)
+    filters = _build_filters(
+        role=key.role, domain=domain, risk=risk, source=source, since=since, until=until
+    )
 
     total_stmt = (
         select(func.count())

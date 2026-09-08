@@ -36,3 +36,7 @@ export const Empty: Story = { args: { data: [] } }
 export const EmptyWithCustomMessage: Story = {
   args: { data: [], emptyMessage: 'No filings match the current filters.' },
 }
+export const Loading: Story = { args: { data: [], loading: true } }
+export const Clickable: Story = {
+  args: { data: sampleData, onRowClick: (row) => console.log(`Clicked ${row.entityName}`) },
+}

@@ -260,6 +260,75 @@ def test_list_filings_since_filter_applies_to_query(monkeypatch: pytest.MonkeyPa
         assert "2026-01-01 00:00:00" in compiled
 
 
+def test_list_filings_source_filter_applies_to_query(monkeypatch: pytest.MonkeyPatch):
+    """FE-03's own acceptance criteria requires filtering by source
+    (SEC/FDA/FINRA) — API-04 never built this param originally."""
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/filings",
+        params={"source": "FDA"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    for call in _real_query_calls(mock_db):
+        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "'FDA'" in compiled
+
+
+def test_list_filings_invalid_source_returns_422(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    _mock_db(monkeypatch, total=0, rows=[])
+
+    response = TestClient(create_app()).get(
+        "/v1/filings",
+        params={"source": "not-a-real-source"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_list_filings_until_filter_applies_to_query(monkeypatch: pytest.MonkeyPatch):
+    """FE-03's "date range" requires an upper bound too — since was always
+    lower-bound-only."""
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/filings",
+        params={"until": "2026-06-01T00:00:00Z"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    for call in _real_query_calls(mock_db):
+        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "2026-06-01 00:00:00" in compiled
+
+
+def test_naive_until_is_normalized_to_utc_not_server_local_time(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Same real bug class API-04's own final review already found and
+    fixed once for `since` — applied here so `until` doesn't reintroduce
+    it (asyncpg's encoder otherwise reinterprets a naive datetime in the
+    server's local timezone against a TIMESTAMP(timezone=True) column)."""
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/filings",
+        params={"until": "2026-06-01T00:00:00"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    for call in _real_query_calls(mock_db):
+        compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "2026-06-01 00:00:00+00" in compiled
+
+
 def test_list_filings_page_query_orders_by_published_at_then_id(
     monkeypatch: pytest.MonkeyPatch,
 ):

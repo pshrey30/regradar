@@ -3,7 +3,8 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { AuthProvider } from './auth/AuthContext'
 import { useAuth } from './auth/useAuth'
-import { Home } from './pages/Home'
+import { FilingDetail } from './pages/FilingDetail'
+import { FilingsList } from './pages/FilingsList'
 import { Login } from './pages/Login'
 
 function ProtectedShell() {
@@ -17,7 +18,12 @@ function ProtectedShell() {
   }
   return (
     <AppShell>
-      <Home />
+      <Routes>
+        {/* FE-03: the Filings List is the default landing screen. */}
+        <Route path="/" element={<FilingsList />} />
+        <Route path="/filings/:filingId" element={<FilingDetail />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
     </AppShell>
   )
 }
