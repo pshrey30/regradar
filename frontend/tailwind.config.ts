@@ -45,14 +45,6 @@ export default {
           'medium-text': '#B45309',
           'high-text': '#C2410C',
         },
-        // Landing page only — the dashboard itself stays light. A near-
-        // black "radar screen" surface for the marketing hero, distinct
-        // from slate-900 so it reads as its own register rather than a
-        // dark-mode variant of the app.
-        ink: {
-          DEFAULT: '#05070C',
-          panel: '#0B0F1A',
-        },
         domain: {
           financial: '#2563EB',
           clinical: '#7C3AED',

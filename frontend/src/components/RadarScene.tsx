@@ -18,8 +18,11 @@ function sweepGradientTexture(): THREE.Texture {
   canvas.height = size
   const ctx = canvas.getContext('2d')!
   const gradient = ctx.createConicGradient(-0.5, size / 2, size / 2)
-  gradient.addColorStop(0, 'rgba(79, 70, 229, 0.55)')
-  gradient.addColorStop(0.12, 'rgba(79, 70, 229, 0.12)')
+  // On a white/light page, additive blending is invisible (white + anything
+  // = white) — this is composited with normal blending instead, so opacity
+  // has to carry all the contrast against the page background.
+  gradient.addColorStop(0, 'rgba(79, 70, 229, 0.85)')
+  gradient.addColorStop(0.12, 'rgba(79, 70, 229, 0.28)')
   gradient.addColorStop(0.22, 'rgba(79, 70, 229, 0)')
   gradient.addColorStop(1, 'rgba(79, 70, 229, 0)')
   ctx.fillStyle = gradient
@@ -54,9 +57,9 @@ export function RadarScene() {
     // Concentric rings + radial spokes, drawn as thin lines — the
     // literal radar-screen grid.
     const ringMaterial = new THREE.LineBasicMaterial({
-      color: 0x34d399,
+      color: 0x94a3b8, // slate-400 — reads on the app's light background
       transparent: true,
-      opacity: 0.22,
+      opacity: 0.45,
     })
     for (const radius of [1, 2, 3, 4]) {
       const points: THREE.Vector3[] = []
@@ -80,7 +83,6 @@ export function RadarScene() {
     const sweepMaterial = new THREE.MeshBasicMaterial({
       map: sweepTexture,
       transparent: true,
-      blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
     })

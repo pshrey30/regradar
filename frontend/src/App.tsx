@@ -34,13 +34,13 @@ function HomeRoute() {
   // Wait out the loading state rather than flashing the marketing page
   // for an already-signed-in visitor before redirecting them away from it.
   if (status === 'loading') {
-    return <div className="flex min-h-screen items-center justify-center bg-ink text-slate-500">Loading…</div>
+    return <div className="flex min-h-screen items-center justify-center bg-white text-slate-500">Loading…</div>
   }
   if (status === 'authenticated') {
     return <Navigate to="/filings" replace />
   }
   return (
-    <Suspense fallback={<div className="min-h-screen bg-ink" />}>
+    <Suspense fallback={<div className="min-h-screen bg-white" />}>
       <Landing />
     </Suspense>
   )
