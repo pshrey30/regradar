@@ -19,3 +19,6 @@ export const Focus: Story = {
 }
 export const Error: Story = { args: { error: 'A valid email address is required.' } }
 export const Disabled: Story = { args: { disabled: true, value: 'disabled@example.com' } }
+export const Large: Story = {
+  args: { size: 'lg', label: undefined, placeholder: 'Ask a question about past filings…' },
+}
