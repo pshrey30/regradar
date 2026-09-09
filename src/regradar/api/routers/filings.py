@@ -10,17 +10,23 @@ satisfies by construction: it never includes extraction data for any
 role).
 """
 
+import asyncio
+import contextlib
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from regradar.api.deps import AuthenticatedKey
+from regradar.api.deps import AuthenticatedKey, get_current_key
 from regradar.api.errors import ApiError
 from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
+from regradar.core.db import get_session_factory, set_rls_context
+from regradar.core.pg_listen import listen
+from regradar.core.s3_client import generate_presigned_pdf_url
 from regradar.models.brief import Brief
 from regradar.models.enums import ApiKeyRole, FilingDomain, FilingSource, FilingStatus, RiskLevel
 from regradar.models.extraction import Extraction
@@ -35,6 +41,8 @@ from regradar.schemas.filings import (
     SearchResponse,
     SearchSource,
 )
+
+_STATUS_NOTIFY_CHANNEL = "filing_status_changed"
 
 logger = logging.getLogger(__name__)
 
@@ -311,3 +319,79 @@ async def get_filing_brief(
         persona=effective_persona or "executive",
         summary=summary_by_persona[effective_persona],
     )
+
+
+@router.get("/v1/filings/{filing_id}/pdf-url")
+async def get_filing_pdf_url(
+    filing_id: uuid.UUID,
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> dict:
+    """A short-lived signed URL to the filing's original PDF ("View
+    Original Document" on FE-04). 404s the same way for "no such filing"
+    and "filing exists but has no stored PDF yet" — nothing to sign in
+    either case, and the two aren't worth distinguishing to the caller.
+    """
+    filing = await db.get(Filing, filing_id)
+    if filing is None or not filing.raw_pdf_s3_key:
+        raise ApiError(
+            status_code=404,
+            code="pdf_not_found",
+            message="No original document is available for this filing.",
+        )
+
+    return {"url": generate_presigned_pdf_url(filing.raw_pdf_s3_key)}
+
+
+@router.websocket("/v1/filings/{filing_id}/status/ws")
+async def stream_filing_status(
+    websocket: WebSocket,
+    filing_id: uuid.UUID,
+    key: AuthenticatedKey = Depends(get_current_key),
+) -> None:
+    """Live filing-status updates for FE-04 (Postgres LISTEN/NOTIFY, not
+    Supabase Realtime — see migration 0016's docstring for why).
+
+    Sends the filing's current status immediately on connect, then one
+    more message each time migration 0016's trigger fires for this filing,
+    until the client disconnects.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        await set_rls_context(
+            db,
+            role=key.role.value,
+            api_key_id=str(key.id),
+            organization_id=str(key.organization_id),
+        )
+        filing = await db.get(Filing, filing_id)
+
+    if filing is None:
+        await websocket.close(code=4404, reason="No filing exists with this ID.")
+        return
+
+    await websocket.accept()
+    await websocket.send_json({"status": filing.status.value})
+
+    try:
+        async with listen(_STATUS_NOTIFY_CHANNEL) as queue:
+            while True:
+                receive_task = asyncio.ensure_future(websocket.receive_text())
+                notify_task = asyncio.ensure_future(queue.get())
+                done, pending = await asyncio.wait(
+                    {receive_task, notify_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+
+                if receive_task in done:
+                    receive_task.result()  # raises WebSocketDisconnect on client close
+                    continue
+
+                payload = json.loads(notify_task.result())
+                if payload.get("filing_id") == str(filing_id):
+                    await websocket.send_json({"status": payload["status"]})
+    except WebSocketDisconnect:
+        pass

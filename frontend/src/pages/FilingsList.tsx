@@ -176,7 +176,11 @@ export function FilingsList() {
           columns={columns}
           data={query.data?.data ?? []}
           getRowKey={(row) => row.id}
-          loading={query.isLoading}
+          // isPending, not isLoading: isLoading (isPending && isFetching)
+          // briefly goes false during a retry's backoff delay even with no
+          // data yet, which would flash the empty-state message instead of
+          // the loading skeleton.
+          loading={query.isPending}
           emptyMessage="No filings match the current filters."
           onRowClick={(row) => navigate(`/filings/${row.id}`)}
         />
