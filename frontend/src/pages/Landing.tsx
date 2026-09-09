@@ -245,9 +245,11 @@ export function Landing() {
       </section>
 
       <footer className="border-t border-slate-200">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-8 text-sm text-slate-500 sm:flex-row sm:px-10">
-          <span>© {new Date().getFullYear()} RegRadar</span>
-          <Link to="/login" className="font-mono text-slate-600 hover:text-slate-900">
+        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-8 text-sm sm:flex-row sm:px-10">
+          <span className="font-mono text-xs tracking-wide text-slate-500">
+            © {new Date().getFullYear()} REGRADAR
+          </span>
+          <Link to="/login" className="font-mono text-xs text-slate-600 hover:text-slate-900">
             Sign in →
           </Link>
         </div>
