@@ -39,7 +39,7 @@ export function Login() {
       // navigation) is the simplest way to make AuthProvider's GET /v1/me
       // re-run and pick it up, matching how the Google flow's own
       // redirect-back-to-frontend already forces a fresh load.
-      window.location.href = '/'
+      window.location.href = '/filings'
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
     } finally {

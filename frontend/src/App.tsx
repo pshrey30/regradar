@@ -1,3 +1,4 @@
+import { lazy, Suspense, type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 
 import { AppShell } from './components/AppShell'
@@ -8,7 +9,12 @@ import { FilingsList } from './pages/FilingsList'
 import { Login } from './pages/Login'
 import { Search } from './pages/Search'
 
-function ProtectedShell() {
+// Landing pulls in three.js for its 3D hero (~600KB) — code-split so that
+// weight is only ever fetched by a logged-out visitor hitting "/", never
+// bundled into the authenticated app's main chunk.
+const Landing = lazy(() => import('./pages/Landing').then((m) => ({ default: m.Landing })))
+
+function ProtectedRoute({ children }: { children: ReactNode }) {
   const { status } = useAuth()
 
   if (status === 'loading') {
@@ -17,18 +23,26 @@ function ProtectedShell() {
   if (status === 'unauthenticated') {
     return <Navigate to="/login" replace />
   }
+  return <AppShell>{children}</AppShell>
+}
+
+// "/" is the public marketing page — an already-authenticated visitor
+// lands straight on the app instead of the pitch meant for a logged-out
+// visitor.
+function HomeRoute() {
+  const { status } = useAuth()
+  // Wait out the loading state rather than flashing the marketing page
+  // for an already-signed-in visitor before redirecting them away from it.
+  if (status === 'loading') {
+    return <div className="flex min-h-screen items-center justify-center bg-ink text-slate-500">Loading…</div>
+  }
+  if (status === 'authenticated') {
+    return <Navigate to="/filings" replace />
+  }
   return (
-    <AppShell>
-      <Routes>
-        {/* FE-03: the Filings List is the default landing screen. */}
-        <Route path="/" element={<FilingsList />} />
-        <Route path="/filings/:filingId" element={<FilingDetail />} />
-        {/* FE-05: API-06's own 403 already blocks the Executive role server-side; */}
-        {/* the nav item's own role-gate (useAuth.ts) hides the entry point too. */}
-        <Route path="/search" element={<Search />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AppShell>
+    <Suspense fallback={<div className="min-h-screen bg-ink" />}>
+      <Landing />
+    </Suspense>
   )
 }
 
@@ -36,8 +50,33 @@ function App() {
   return (
     <AuthProvider>
       <Routes>
+        <Route path="/" element={<HomeRoute />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/*" element={<ProtectedShell />} />
+        <Route
+          path="/filings"
+          element={
+            <ProtectedRoute>
+              <FilingsList />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/filings/:filingId"
+          element={
+            <ProtectedRoute>
+              <FilingDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/search"
+          element={
+            <ProtectedRoute>
+              <Search />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AuthProvider>
   )

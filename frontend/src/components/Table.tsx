@@ -52,7 +52,7 @@ export function Table<T>({
               <th
                 key={column.header}
                 scope="col"
-                className="h-14 px-4 text-left text-xs font-semibold uppercase tracking-wide text-slate-500"
+                className="h-14 whitespace-nowrap px-4 text-left text-xs font-semibold uppercase tracking-wide text-slate-500"
               >
                 {column.header}
               </th>
@@ -81,7 +81,7 @@ export function Table<T>({
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
               >
                 {columns.map((column) => (
-                  <td key={column.header} className="px-4 text-sm text-slate-900">
+                  <td key={column.header} className="whitespace-nowrap px-4 text-sm text-slate-900">
                     {column.accessor(row)}
                   </td>
                 ))}

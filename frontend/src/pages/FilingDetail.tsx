@@ -248,10 +248,19 @@ export function FilingDetail() {
             </span>
           </div>
         </div>
-        <div className="mt-4 flex items-center gap-4 text-sm text-slate-500">
-          <span>Published {new Date(filing.published_at).toLocaleDateString()}</span>
-          {filing.priority_score !== null && <span>Priority score: {filing.priority_score.toFixed(2)}</span>}
-          <Button variant="secondary" size="sm" onClick={handleViewOriginal}>
+        <div className="mt-4 flex flex-col gap-3 text-sm text-slate-500 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
+          <div className="flex flex-wrap gap-4">
+            <span>Published {new Date(filing.published_at).toLocaleDateString()}</span>
+            {filing.priority_score !== null && (
+              <span>Priority score: {filing.priority_score.toFixed(2)}</span>
+            )}
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="w-full whitespace-nowrap sm:w-auto"
+            onClick={handleViewOriginal}
+          >
             View Original Document
           </Button>
         </div>

@@ -42,7 +42,7 @@ export function Search() {
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-slate-900">Ask RegRadar</h1>
 
-      <form onSubmit={handleSubmit} className="flex gap-3">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-3 sm:flex-row">
         <div className="flex-1">
           <Input
             size="lg"
@@ -52,7 +52,13 @@ export function Search() {
             aria-label="Ask a question about past filings"
           />
         </div>
-        <Button type="submit" size="lg" loading={mutation.isPending} disabled={!query.trim()}>
+        <Button
+          type="submit"
+          size="lg"
+          className="w-full sm:w-auto"
+          loading={mutation.isPending}
+          disabled={!query.trim()}
+        >
           Ask
         </Button>
       </form>
