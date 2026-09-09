@@ -70,8 +70,21 @@ export function Search() {
       {mutation.isSuccess && (
         <div className="flex flex-col gap-4">
           {mutation.data.degraded && (
-            <div className="rounded-lg border border-risk-medium bg-white p-4 text-sm text-risk-medium">
-              Natural-language answering is temporarily limited — showing raw search results instead.
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-risk-medium bg-white p-4 text-sm text-risk-medium">
+              <span>
+                Natural-language answering is temporarily limited — showing raw search results
+                instead.
+              </span>
+              {submittedQuery && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={mutation.isPending}
+                  onClick={() => mutation.mutate(submittedQuery)}
+                >
+                  Retry answer
+                </Button>
+              )}
             </div>
           )}
 

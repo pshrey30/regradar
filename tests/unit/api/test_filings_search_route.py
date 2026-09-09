@@ -184,6 +184,8 @@ def test_search_returns_synthesized_answer_and_sources_on_success(
 
 
 def test_search_falls_back_to_degraded_when_llm_call_fails(monkeypatch: pytest.MonkeyPatch):
+    """Every attempt fails — degrades after exhausting the retry, not on
+    the first failure (that's the next test's job to confirm)."""
     filing_id = uuid.uuid4()
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
     monkeypatch.setattr(
@@ -203,6 +205,7 @@ def test_search_falls_back_to_degraded_when_llm_call_fails(monkeypatch: pytest.M
         answer_synthesis_module, "select_model", lambda risk_level, task: _TEST_MODEL_CHOICE
     )
     monkeypatch.setattr(answer_synthesis_module, "build_client", lambda choice: mock_llm_client)
+    monkeypatch.setattr(answer_synthesis_module.time, "sleep", lambda seconds: None)
 
     response = TestClient(create_app()).post(
         "/v1/filings/search",
@@ -215,3 +218,45 @@ def test_search_falls_back_to_degraded_when_llm_call_fails(monkeypatch: pytest.M
     assert body["answer"] is None
     assert body["degraded"] is True
     assert len(body["sources"]) == 1
+    assert mock_llm_client.chat.completions.create.call_count == 2
+
+
+def test_search_recovers_after_one_transient_llm_failure(monkeypatch: pytest.MonkeyPatch):
+    """A cold-start-style transient failure on the first attempt still
+    returns a real answer once the retry succeeds, instead of degrading."""
+    filing_id = uuid.uuid4()
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    monkeypatch.setattr(
+        filings_module,
+        "retrieve_similar_filings",
+        AsyncMock(
+            return_value=[RetrievedChunk(filing_id=filing_id, chunk_text="Some text.", score=0.5)]
+        ),
+    )
+    _mock_retrieval_db(monkeypatch, filing_rows=[_filing_row(filing_id)])
+
+    success_response = MagicMock()
+    success_response.choices = [MagicMock(message=MagicMock(content="A real answer."))]
+
+    mock_llm_client = MagicMock()
+    mock_llm_client.chat.completions.create.side_effect = [
+        APIConnectionError(request=MagicMock()),
+        success_response,
+    ]
+    monkeypatch.setattr(
+        answer_synthesis_module, "select_model", lambda risk_level, task: _TEST_MODEL_CHOICE
+    )
+    monkeypatch.setattr(answer_synthesis_module, "build_client", lambda choice: mock_llm_client)
+    monkeypatch.setattr(answer_synthesis_module.time, "sleep", lambda seconds: None)
+
+    response = TestClient(create_app()).post(
+        "/v1/filings/search",
+        json={"query": "anything"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "A real answer."
+    assert body["degraded"] is False
+    assert mock_llm_client.chat.completions.create.call_count == 2
