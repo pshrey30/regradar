@@ -9,9 +9,12 @@ export function useAuth() {
 }
 
 // Security & Access Document's permission matrix, condensed to what the
-// nav shell needs — FE-03 through FE-09's own screens aren't built yet
-// (out of this ticket's scope), so this only gates which nav *links* show,
-// not any route's actual data.
+// nav shell needs. Every protected screen's real data access is already
+// enforced server-side (RLS + explicit role checks) regardless of this
+// table — App.tsx's ProtectedRoute additionally reuses it as a route-level
+// guard (see NAV_ITEM_TO_PATH below) so a blocked role is redirected
+// before the page renders, rather than relying solely on the nav link
+// being hidden plus the backend's eventual 403.
 const _NAV_ITEM_ROLES: Record<string, Role[] | 'all'> = {
   filings: 'all',
   search: ['admin', 'analyst', 'legal_counsel', 'eng_lead'], // not executive (API-06's own 403)
@@ -21,7 +24,9 @@ const _NAV_ITEM_ROLES: Record<string, Role[] | 'all'> = {
   source_config: ['admin'],
 }
 
-export function canSeeNavItem(role: Role | null, item: keyof typeof _NAV_ITEM_ROLES): boolean {
+export type NavItem = keyof typeof _NAV_ITEM_ROLES
+
+export function canSeeNavItem(role: Role | null, item: NavItem): boolean {
   if (!role) return false
   const allowed = _NAV_ITEM_ROLES[item]
   return allowed === 'all' || allowed.includes(role)

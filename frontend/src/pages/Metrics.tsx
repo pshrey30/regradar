@@ -82,6 +82,11 @@ export function Metrics() {
     latestQuery.error instanceof ApiError &&
     latestQuery.error.status === 404
 
+  const forbidden =
+    latestQuery.isError &&
+    latestQuery.error instanceof ApiError &&
+    latestQuery.error.status === 403
+
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-slate-900">Metrics & Cost</h1>
@@ -101,7 +106,13 @@ export function Metrics() {
         </Card>
       )}
 
-      {latestQuery.isError && !noDataYet && (
+      {forbidden && (
+        <Card>
+          <p className="text-sm text-slate-500">You don&rsquo;t have permission to view metrics.</p>
+        </Card>
+      )}
+
+      {latestQuery.isError && !noDataYet && !forbidden && (
         <Card>
           <p className="text-sm text-risk-critical">
             {latestQuery.error instanceof ApiError

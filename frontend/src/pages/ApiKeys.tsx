@@ -211,14 +211,33 @@ export function ApiKeys() {
     queryFn: () => apiFetch<ApiKeyItem[]>('/v1/api-keys'),
   })
 
+  // A 403 here means this session's role can't manage API keys at all
+  // (e.g. reached via a stale bookmark before a role change) — no action
+  // button should be shown above that message, since it would only fail.
+  const forbidden = query.isError && query.error instanceof ApiError && query.error.status === 403
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-900">API Keys</h1>
-        <Button onClick={() => setCreateOpen(true)}>Create key</Button>
+        {!forbidden && <Button onClick={() => setCreateOpen(true)}>Create key</Button>}
       </div>
 
-      {query.isError && (
+      {query.isPending && (
+        <Card>
+          <p className="text-sm text-slate-500">Loading…</p>
+        </Card>
+      )}
+
+      {forbidden && (
+        <Card>
+          <p className="text-sm text-slate-500">
+            You don&rsquo;t have permission to view API keys.
+          </p>
+        </Card>
+      )}
+
+      {query.isError && !forbidden && (
         <Card>
           <p className="text-sm text-risk-critical">
             {query.error instanceof ApiError

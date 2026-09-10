@@ -20,6 +20,7 @@ export function Login() {
   const [mode, setMode] = useState<Mode>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -27,6 +28,10 @@ export function Login() {
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
     setFormError(null)
+    if (mode === 'signup' && password !== confirmPassword) {
+      setFormError("Passwords don't match.")
+      return
+    }
     setSubmitting(true)
     try {
       const path = mode === 'login' ? '/v1/auth/login' : '/v1/auth/signup'
@@ -99,6 +104,17 @@ export function Login() {
             onChange={(e) => setPassword(e.target.value)}
             placeholder={mode === 'signup' ? 'At least 8 characters' : undefined}
           />
+          {mode === 'signup' && (
+            <Input
+              label="Confirm password"
+              type="password"
+              required
+              minLength={8}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Re-enter your password"
+            />
+          )}
           {formError && <p className="text-sm text-risk-critical">{formError}</p>}
           <Button type="submit" variant="primary" size="lg" className="w-full" loading={submitting}>
             {mode === 'login' ? 'Sign in' : 'Create account'}
@@ -113,6 +129,7 @@ export function Login() {
             onClick={() => {
               setMode(mode === 'login' ? 'signup' : 'login')
               setFormError(null)
+              setConfirmPassword('')
             }}
           >
             {mode === 'login' ? 'Sign up' : 'Sign in'}

@@ -3,7 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 
 import { AppShell } from './components/AppShell'
 import { AuthProvider } from './auth/AuthContext'
-import { useAuth } from './auth/useAuth'
+import { canSeeNavItem, useAuth, type NavItem } from './auth/useAuth'
 import { ApiKeys } from './pages/ApiKeys'
 import { FilingDetail } from './pages/FilingDetail'
 import { FilingsList } from './pages/FilingsList'
@@ -18,14 +18,22 @@ import { Webhooks } from './pages/Webhooks'
 // bundled into the authenticated app's main chunk.
 const Landing = lazy(() => import('./pages/Landing').then((m) => ({ default: m.Landing })))
 
-function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { status } = useAuth()
+// `navItem` is optional — routes with no role restriction (Filings, Filing
+// Detail) omit it. When present, a role that can't see the matching nav
+// item is redirected to /filings before the page (and its data queries)
+// ever mount — belt-and-suspenders on top of the backend's own 403, since
+// nav-hiding alone still let a typed-in URL reach the full page shell.
+function ProtectedRoute({ children, navItem }: { children: ReactNode; navItem?: NavItem }) {
+  const { status, role } = useAuth()
 
   if (status === 'loading') {
     return <div className="flex min-h-screen items-center justify-center text-slate-500">Loading…</div>
   }
   if (status === 'unauthenticated') {
     return <Navigate to="/login" replace />
+  }
+  if (navItem && !canSeeNavItem(role, navItem)) {
+    return <Navigate to="/filings" replace />
   }
   return <AppShell>{children}</AppShell>
 }
@@ -75,7 +83,7 @@ function App() {
         <Route
           path="/search"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute navItem="search">
               <Search />
             </ProtectedRoute>
           }
@@ -83,7 +91,7 @@ function App() {
         <Route
           path="/webhooks"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute navItem="webhooks">
               <Webhooks />
             </ProtectedRoute>
           }
@@ -91,7 +99,7 @@ function App() {
         <Route
           path="/api-keys"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute navItem="api_keys">
               <ApiKeys />
             </ProtectedRoute>
           }
@@ -99,7 +107,7 @@ function App() {
         <Route
           path="/metrics"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute navItem="metrics">
               <Metrics />
             </ProtectedRoute>
           }
@@ -107,7 +115,7 @@ function App() {
         <Route
           path="/source-config"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute navItem="source_config">
               <SourceConfig />
             </ProtectedRoute>
           }
