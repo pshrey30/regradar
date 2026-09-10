@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { AuthProvider } from './auth/AuthContext'
 import { useAuth } from './auth/useAuth'
+import { ApiKeys } from './pages/ApiKeys'
 import { FilingDetail } from './pages/FilingDetail'
 import { FilingsList } from './pages/FilingsList'
 import { Login } from './pages/Login'
@@ -82,6 +83,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Webhooks />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/api-keys"
+          element={
+            <ProtectedRoute>
+              <ApiKeys />
             </ProtectedRoute>
           }
         />

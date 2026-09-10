@@ -30,11 +30,13 @@ def _create_api_key(
 ) -> None:
     """Mint a new API key: hash it, insert the row, print the plaintext once.
 
-    This is a bootstrap mechanism for local dev, tests, and live
-    verification — no ticket has built a real key-issuance endpoint yet
-    (FE-07 defers that to V2). rate_limit_per_minute is optional and mainly
-    useful for API-03's live verification, where a low limit (e.g. 3) lets a
-    real 429 be triggered in a handful of requests instead of 60+.
+    This remains the bootstrap mechanism for local dev, tests, and live
+    verification — issuing the very first Admin-role key, before anyone
+    can sign in to use FE-07's own POST /v1/api-keys endpoint (which
+    requires an existing Admin key to call). rate_limit_per_minute is
+    optional and mainly useful for API-03's live verification, where a
+    low limit (e.g. 3) lets a real 429 be triggered in a handful of
+    requests instead of 60+.
     """
     from sqlalchemy import select
 
@@ -67,6 +69,7 @@ def _create_api_key(
             key = ApiKey(
                 organization_id=org_id,
                 key_hash=hash_api_key(plaintext_key),
+                key_suffix=plaintext_key[-4:],
                 owner_label=owner_label,
                 role=role_enum,
                 is_active=True,

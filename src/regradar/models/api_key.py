@@ -25,6 +25,10 @@ class ApiKey(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
     key_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    # FE-07: the last 4 characters of the plaintext key, captured only at
+    # creation time, purely so a masked list can distinguish keys from
+    # each other — never used for authentication (key_hash is).
+    key_suffix: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_label: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[ApiKeyRole] = mapped_column(
         SAEnum(ApiKeyRole, name="api_key_role", values_callable=pg_enum_values),
