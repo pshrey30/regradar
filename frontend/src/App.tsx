@@ -8,6 +8,7 @@ import { ApiKeys } from './pages/ApiKeys'
 import { FilingDetail } from './pages/FilingDetail'
 import { FilingsList } from './pages/FilingsList'
 import { Login } from './pages/Login'
+import { Metrics } from './pages/Metrics'
 import { Search } from './pages/Search'
 import { Webhooks } from './pages/Webhooks'
 
@@ -91,6 +92,14 @@ function App() {
           element={
             <ProtectedRoute>
               <ApiKeys />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/metrics"
+          element={
+            <ProtectedRoute>
+              <Metrics />
             </ProtectedRoute>
           }
         />

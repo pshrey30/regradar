@@ -14,7 +14,7 @@ const _NAV_LINKS: { key: Parameters<typeof canSeeNavItem>[1]; label: string; pat
   { key: 'search', label: 'Ask RegRadar', path: '/search' },
   { key: 'webhooks', label: 'Webhooks', path: '/webhooks' },
   { key: 'api_keys', label: 'API Keys', path: '/api-keys' },
-  { key: 'metrics', label: 'Metrics & Cost' },
+  { key: 'metrics', label: 'Metrics & Cost', path: '/metrics' },
   { key: 'source_config', label: 'Source Configuration' },
 ]
 
