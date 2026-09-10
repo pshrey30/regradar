@@ -23,7 +23,12 @@ from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authentic
 from regradar.core.api_keys import generate_api_key, hash_api_key
 from regradar.models.api_key import ApiKey
 from regradar.models.enums import ApiKeyRole
-from regradar.schemas.api_keys import ApiKeyCreateRequest, ApiKeyCreateResponse, ApiKeyResponse
+from regradar.schemas.api_keys import (
+    ApiKeyCreateRequest,
+    ApiKeyCreateResponse,
+    ApiKeyResponse,
+    ApiKeyRoleUpdateRequest,
+)
 
 router = APIRouter()
 
@@ -75,6 +80,8 @@ async def create_api_key(
         key_suffix=new_key.key_suffix,
         created_at=new_key.created_at,
         last_used_at=None,
+        email=None,
+        sso_provider=None,
         key=plaintext_key,
     )
 
@@ -99,9 +106,47 @@ async def list_api_keys(
             key_suffix=row.key_suffix,
             created_at=row.created_at,
             last_used_at=row.last_used_at,
+            email=row.email,
+            sso_provider=row.sso_provider,
         )
         for row in rows
     ]
+
+
+@router.patch("/v1/api-keys/{key_id}", response_model=ApiKeyResponse)
+async def update_api_key_role(
+    key_id: uuid.UUID,
+    body: ApiKeyRoleUpdateRequest,
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> ApiKeyResponse:
+    """Admin-only. Changes another user's (or a bare API key's) role —
+    self-service role escalation is never exposed anywhere in the
+    frontend; only an existing Admin can grant a role, including to
+    themselves."""
+    _require_admin(key)
+
+    target = await db.get(ApiKey, key_id)
+    if target is None or target.organization_id != key.organization_id:
+        raise ApiError(
+            status_code=404, code="api_key_not_found", message="No API key exists with this ID."
+        )
+
+    target.role = body.role
+    await db.commit()
+
+    return ApiKeyResponse(
+        id=target.id,
+        owner_label=target.owner_label,
+        role=target.role,
+        is_active=target.is_active,
+        rate_limit_per_minute=target.rate_limit_per_minute,
+        key_suffix=target.key_suffix,
+        created_at=target.created_at,
+        last_used_at=target.last_used_at,
+        email=target.email,
+        sso_provider=target.sso_provider,
+    )
 
 
 @router.delete("/v1/api-keys/{key_id}", response_model=ApiKeyResponse)
@@ -130,4 +175,6 @@ async def revoke_api_key(
         key_suffix=target.key_suffix,
         created_at=target.created_at,
         last_used_at=target.last_used_at,
+        email=target.email,
+        sso_provider=target.sso_provider,
     )

@@ -76,6 +76,19 @@ export default {
         xl: '16px',
         full: '9999px',
       },
+      keyframes: {
+        // One restrained entrance treatment, reused everywhere a page or
+        // card needs to feel considered rather than static — matches the
+        // Landing hero's own quiet, no-bounce motion language rather than
+        // introducing a second animation style.
+        'fade-in-up': {
+          '0%': { opacity: '0', transform: 'translateY(8px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+      },
+      animation: {
+        'fade-in-up': 'fade-in-up 0.4s ease-out both',
+      },
     },
   },
   plugins: [],

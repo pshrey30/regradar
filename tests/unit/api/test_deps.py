@@ -18,6 +18,8 @@ def _mock_row(*, is_active: bool = True, role: ApiKeyRole = ApiKeyRole.ADMIN):
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 60
     row.is_active = is_active
+    row.email = None
+    row.password_hash = None
     return row
 
 

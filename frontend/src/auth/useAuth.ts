@@ -22,6 +22,7 @@ const _NAV_ITEM_ROLES: Record<string, Role[] | 'all'> = {
   api_keys: ['admin'],
   metrics: ['admin', 'eng_lead'],
   source_config: ['admin'],
+  users: ['admin'],
 }
 
 export type NavItem = keyof typeof _NAV_ITEM_ROLES

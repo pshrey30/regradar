@@ -28,6 +28,13 @@ class ApiKeyResponse(BaseModel):
     key_suffix: str | None
     created_at: datetime
     last_used_at: datetime | None
+    # Present only for a row that's also a login identity (FE-02 email/
+    # password or Google SSO) — None for a row that only exists as a
+    # programmatic API key. Lets the frontend distinguish "person who can
+    # sign in" from "bare API key" in the same admin list, without a
+    # second table or endpoint.
+    email: str | None = None
+    sso_provider: str | None = None
 
 
 class ApiKeyCreateResponse(ApiKeyResponse):
@@ -35,3 +42,7 @@ class ApiKeyCreateResponse(ApiKeyResponse):
     exactly once, at creation."""
 
     key: str
+
+
+class ApiKeyRoleUpdateRequest(BaseModel):
+    role: ApiKeyRole

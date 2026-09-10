@@ -31,11 +31,14 @@ asking for it.
 
 import logging
 
-from fastapi import APIRouter, Cookie, Response
+from fastapi import APIRouter, Cookie, Depends, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
+from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.core.api_keys import generate_api_key, hash_api_key
 from regradar.core.config import get_settings
 from regradar.core.db import get_session_factory, set_rls_context
@@ -51,7 +54,7 @@ from regradar.core.sso import (
 from regradar.models.api_key import ApiKey
 from regradar.models.enums import ApiKeyRole
 from regradar.models.organization import Organization
-from regradar.schemas.auth import LoginRequest, SignupRequest
+from regradar.schemas.auth import ChangePasswordRequest, LoginRequest, SignupRequest
 
 logger = logging.getLogger(__name__)
 
@@ -296,3 +299,34 @@ async def login(payload: LoginRequest) -> Response:
     response = JSONResponse(content={"status": "ok"})
     _set_session_cookie(response, plaintext_token)
     return response
+
+
+@router.post("/v1/auth/change-password", status_code=204)
+async def change_password(
+    body: ChangePasswordRequest,
+    caller: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> Response:
+    row = await db.get(ApiKey, caller.id)
+    assert row is not None  # the row that authenticated this request
+
+    if row.password_hash is None:
+        # A Google-SSO-only account has no password to change — signing
+        # in with a password was never how this identity authenticates.
+        raise ApiError(
+            status_code=400,
+            code="no_password_set",
+            message="This account signs in with Google and has no password to change.",
+        )
+    if not verify_password(body.current_password, row.password_hash):
+        raise ApiError(
+            status_code=401, code="incorrect_password", message="Current password is incorrect."
+        )
+
+    try:
+        row.password_hash = hash_password(body.new_password)
+    except WeakPasswordError as exc:
+        raise ApiError(status_code=422, code="weak_password", message=str(exc)) from exc
+
+    await db.commit()
+    return Response(status_code=204)

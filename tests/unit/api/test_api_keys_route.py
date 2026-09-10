@@ -22,6 +22,8 @@ def _authenticated_key_row(role: ApiKeyRole, *, org_id: uuid.UUID | None = None)
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 1000
     row.is_active = True
+    row.email = None
+    row.password_hash = None
     return row
 
 
@@ -125,6 +127,8 @@ def _api_key_row(
     row.key_suffix = "abcd"
     row.created_at = datetime(2026, 1, 1, tzinfo=UTC)
     row.last_used_at = None
+    row.email = None
+    row.sso_provider = None
     return row
 
 
@@ -225,6 +229,70 @@ def test_revoke_api_key_from_another_organization_returns_404(monkeypatch: pytes
 
     response = TestClient(create_app()).delete(
         f"/v1/api-keys/{key_id}", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_update_api_key_role_requires_admin(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
+    _mock_route_db(monkeypatch)
+
+    response = TestClient(create_app()).patch(
+        f"/v1/api-keys/{uuid.uuid4()}",
+        json={"role": "admin"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_update_api_key_role_changes_target_role(monkeypatch: pytest.MonkeyPatch):
+    org_id = _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_route_db(monkeypatch)
+    key_id = uuid.uuid4()
+    target = _api_key_row(key_id=key_id, org_id=org_id, role=ApiKeyRole.ANALYST)
+    mock_db.get = AsyncMock(return_value=target)
+
+    response = TestClient(create_app()).patch(
+        f"/v1/api-keys/{key_id}",
+        json={"role": "eng_lead"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "eng_lead"
+    assert target.role == ApiKeyRole.ENG_LEAD
+    mock_db.commit.assert_awaited()
+
+
+def test_update_api_key_role_nonexistent_returns_404(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_route_db(monkeypatch)
+    mock_db.get = AsyncMock(return_value=None)
+
+    response = TestClient(create_app()).patch(
+        f"/v1/api-keys/{uuid.uuid4()}",
+        json={"role": "admin"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "api_key_not_found"
+
+
+def test_update_api_key_role_from_another_organization_returns_404(monkeypatch: pytest.MonkeyPatch):
+    org_id = _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_route_db(monkeypatch)
+    key_id = uuid.uuid4()
+    other_org_id = uuid.uuid4()
+    assert other_org_id != org_id
+    mock_db.get = AsyncMock(return_value=_api_key_row(key_id=key_id, org_id=other_org_id))
+
+    response = TestClient(create_app()).patch(
+        f"/v1/api-keys/{key_id}",
+        json={"role": "admin"},
+        headers={"Authorization": "Bearer rr_test-key"},
     )
 
     assert response.status_code == 404

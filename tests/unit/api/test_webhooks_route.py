@@ -22,6 +22,8 @@ def _authenticated_key_row(role: ApiKeyRole, *, key_id: uuid.UUID | None = None)
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 1000
     row.is_active = True
+    row.email = None
+    row.password_hash = None
     return row
 
 

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
@@ -54,12 +54,27 @@ export function Login() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
-      <Card className="w-full max-w-sm">
-        <div className="mb-6 text-center">
-          <h1 className="mb-1 text-xl font-semibold text-slate-900">RegRadar</h1>
-          <p className="text-sm text-slate-500">Regulatory filing intelligence</p>
-        </div>
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-white p-4">
+      {/* Same radial primary-tint treatment as the Landing hero — carries
+          the visual thread across the "get started" -> login handoff
+          instead of dropping into a flat, unrelated screen. */}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,_rgba(79,70,229,0.08),_transparent_60%)]" />
+
+      <div className="relative w-full max-w-sm animate-fade-in-up">
+        <Link
+          to="/"
+          className="mb-6 flex items-center justify-center gap-2 font-mono text-sm font-semibold tracking-[0.2em] text-slate-900"
+        >
+          REGRADAR
+        </Link>
+
+        <Card className="w-full">
+          <div className="mb-6 text-center">
+            <h1 className="mb-1 text-xl font-semibold text-slate-900">
+              {mode === 'login' ? 'Welcome back' : 'Create your account'}
+            </h1>
+            <p className="text-sm text-slate-500">Regulatory filing intelligence</p>
+          </div>
 
         {oauthErrorCode && (
           <p className="mb-4 rounded-md border border-risk-critical bg-white px-3 py-2 text-sm text-risk-critical">
@@ -146,7 +161,8 @@ export function Login() {
             {mode === 'login' ? 'Sign up' : 'Sign in'}
           </button>
         </p>
-      </Card>
+        </Card>
+      </div>
     </div>
   )
 }

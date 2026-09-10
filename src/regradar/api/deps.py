@@ -26,6 +26,13 @@ class AuthenticatedKey(BaseModel):
     role: ApiKeyRole
     owner_label: str
     rate_limit_per_minute: int
+    # None for a row with no email/password login path at all (a bare,
+    # non-login API key) — present whether the row logs in via email/
+    # password or Google SSO, since either can carry an email.
+    email: str | None = None
+    # Whether this row has a password to change — false for an SSO-only
+    # row, or a bare API key with no login path of its own.
+    has_password: bool = False
 
 
 async def get_current_key(
@@ -79,4 +86,6 @@ async def get_current_key(
             role=row.role,
             owner_label=row.owner_label,
             rate_limit_per_minute=row.rate_limit_per_minute,
+            email=row.email,
+            has_password=row.password_hash is not None,
         )

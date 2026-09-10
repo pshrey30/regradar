@@ -53,6 +53,8 @@ def test_whoami_with_valid_key_returns_role_and_owner(monkeypatch: pytest.Monkey
     row.owner_label = "test-integrator"
     row.rate_limit_per_minute = 60
     row.is_active = True
+    row.email = None
+    row.password_hash = None
     _mock_db_session(monkeypatch, row)
     _mock_redis(monkeypatch, incr_return_value=1)
 
@@ -72,6 +74,8 @@ def test_whoami_returns_429_when_rate_limit_exceeded(monkeypatch: pytest.MonkeyP
     row.owner_label = "test-owner"
     row.rate_limit_per_minute = 5
     row.is_active = True
+    row.email = None
+    row.password_hash = None
     _mock_db_session(monkeypatch, row)
     _mock_redis(monkeypatch, incr_return_value=6)
 

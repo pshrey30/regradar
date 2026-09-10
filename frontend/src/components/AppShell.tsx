@@ -12,6 +12,7 @@ const _NAV_LINKS: { key: Parameters<typeof canSeeNavItem>[1]; label: string; pat
   { key: 'api_keys', label: 'API Keys', path: '/api-keys' },
   { key: 'metrics', label: 'Metrics & Cost', path: '/metrics' },
   { key: 'source_config', label: 'Source Configuration', path: '/source-config' },
+  { key: 'users', label: 'Manage Users', path: '/users' },
 ]
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
@@ -32,19 +33,22 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
           )
         }
         return (
-          <li key={item.key}>
+          <li key={item.key} className="relative">
             <Link
               to={item.path}
               onClick={onNavigate}
               className={[
-                'block rounded-md px-3 py-2 text-sm transition-colors',
+                'block rounded-md px-3 py-2 text-sm transition-all duration-150',
                 isActive
-                  ? 'bg-primary-50 font-medium text-primary-700'
-                  : 'text-slate-600 hover:bg-slate-100',
+                  ? 'bg-primary-50 font-medium text-primary-700 translate-x-0.5'
+                  : 'text-slate-600 hover:translate-x-0.5 hover:bg-slate-100',
               ].join(' ')}
             >
               {item.label}
             </Link>
+            {isActive && (
+              <span className="absolute -left-1 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary-600" />
+            )}
           </li>
         )
       })}
@@ -56,7 +60,12 @@ function SignOutForm() {
   const { displayName } = useAuth()
   return (
     <div className="border-t border-slate-200 pt-4">
-      <p className="mb-2 truncate text-xs text-slate-500">{displayName}</p>
+      <Link
+        to="/profile"
+        className="mb-2 block truncate rounded-md px-1 text-xs text-slate-500 transition-colors hover:text-primary-600"
+      >
+        {displayName}
+      </Link>
       <form action={`${API_BASE_URL}/v1/auth/logout`} method="POST">
         <Button type="submit" variant="ghost" size="sm" className="w-full">
           Sign out
@@ -73,7 +82,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen flex-col md:flex-row">
       {/* Mobile top bar — the fixed sidebar only fits from md up. */}
       <header className="flex items-center justify-between border-b border-slate-200 bg-white p-4 md:hidden">
-        <span className="text-lg font-semibold text-slate-900">RegRadar</span>
+        <span className="font-mono text-sm font-semibold tracking-[0.2em] text-slate-900">
+          REGRADAR
+        </span>
         <button
           type="button"
           aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
@@ -101,7 +112,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       )}
 
       <nav className="hidden w-56 shrink-0 flex-col border-r border-slate-200 bg-white p-4 md:flex">
-        <p className="mb-6 text-lg font-semibold text-slate-900">RegRadar</p>
+        <Link
+          to="/filings"
+          className="mb-6 block font-mono text-sm font-semibold tracking-[0.2em] text-slate-900"
+        >
+          REGRADAR
+        </Link>
         <NavLinks />
         <SignOutForm />
       </nav>

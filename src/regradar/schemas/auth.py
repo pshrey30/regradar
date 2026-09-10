@@ -32,3 +32,8 @@ class LoginRequest(BaseModel):
     @classmethod
     def _normalize_email(cls, value: str) -> str:
         return value.lower()
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
