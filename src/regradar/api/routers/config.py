@@ -1,9 +1,10 @@
-"""POST /v1/config/sources — Admin-only source/domain monitoring config.
+"""GET/POST /v1/config/sources — source/domain monitoring config.
 
-Changes take effect on the next scheduled Prefect cycle with no redeploy:
-`ingestion/flows.py`'s `poll_all_sources` queries `source_configs` fresh
-each run, so flipping `is_active` here is all a running scheduler needs to
-see.
+GET is readable by any authenticated role (matches source_configs' RLS
+SELECT policy); POST is Admin-only. Changes take effect on the next
+scheduled Prefect cycle with no redeploy: `ingestion/flows.py`'s
+`poll_all_sources` queries `source_configs` fresh each run, so flipping
+`is_active` here is all a running scheduler needs to see.
 """
 
 from fastapi import APIRouter, Depends
@@ -18,6 +19,24 @@ from regradar.models.source_config import SourceConfig
 from regradar.schemas.config import SourceConfigResponse, SourceConfigUpdateRequest
 
 router = APIRouter()
+
+
+@router.get("/v1/config/sources", response_model=list[SourceConfigResponse])
+async def get_source_config(
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> list[SourceConfigResponse]:
+    rows = {row.source: row for row in (await db.execute(select(SourceConfig))).scalars().all()}
+    return [
+        SourceConfigResponse(
+            source=source,
+            domains=rows[source].domains if source in rows else [],
+            is_active=rows[source].is_active if source in rows else False,
+            poll_interval_seconds=rows[source].poll_interval_seconds if source in rows else 300,
+            last_polled_at=rows[source].last_polled_at if source in rows else None,
+        )
+        for source in sorted(FilingSource, key=lambda s: s.value)
+    ]
 
 
 @router.post("/v1/config/sources", response_model=list[SourceConfigResponse])

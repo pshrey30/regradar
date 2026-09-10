@@ -5,17 +5,13 @@ import { canSeeNavItem, useAuth } from '../auth/useAuth'
 import { API_BASE_URL } from '../lib/api'
 import { Button } from './Button'
 
-// `path` is only set for a nav item whose screen actually exists yet
-// (FE-06 through FE-09's screens aren't built — those stay inert text,
-// same as every nav item was before FE-05 added the first real
-// destination to click *to* from elsewhere in the nav).
 const _NAV_LINKS: { key: Parameters<typeof canSeeNavItem>[1]; label: string; path?: string }[] = [
   { key: 'filings', label: 'Filings', path: '/filings' },
   { key: 'search', label: 'Ask RegRadar', path: '/search' },
   { key: 'webhooks', label: 'Webhooks', path: '/webhooks' },
   { key: 'api_keys', label: 'API Keys', path: '/api-keys' },
   { key: 'metrics', label: 'Metrics & Cost', path: '/metrics' },
-  { key: 'source_config', label: 'Source Configuration' },
+  { key: 'source_config', label: 'Source Configuration', path: '/source-config' },
 ]
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {

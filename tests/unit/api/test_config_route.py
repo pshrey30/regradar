@@ -1,4 +1,4 @@
-"""Tests for POST /v1/config/sources."""
+"""Tests for GET/POST /v1/config/sources."""
 
 import uuid
 from unittest.mock import AsyncMock, MagicMock
@@ -68,6 +68,35 @@ def _mock_config_db(monkeypatch: pytest.MonkeyPatch, *, existing_rows: list):
     mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
     monkeypatch.setattr(db_module, "get_session_factory", lambda: mock_session_factory)
     return mock_db
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        ApiKeyRole.ADMIN,
+        ApiKeyRole.ANALYST,
+        ApiKeyRole.EXECUTIVE,
+        ApiKeyRole.LEGAL_COUNSEL,
+        ApiKeyRole.ENG_LEAD,
+    ],
+)
+def test_get_source_config_is_readable_by_every_role(monkeypatch: pytest.MonkeyPatch, role: ApiKeyRole):
+    _mock_auth_and_rate_limit(monkeypatch, role=role)
+    _mock_config_db(monkeypatch, existing_rows=[_source_config_row(FilingSource.SEC, is_active=True)])
+
+    response = TestClient(create_app()).get(
+        "/v1/config/sources",
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    by_source = {row["source"]: row for row in body}
+    assert set(by_source.keys()) == {"SEC", "FDA", "FINRA"}
+    assert by_source["SEC"]["is_active"] is True
+    assert by_source["SEC"]["domains"] == ["financial"]
+    assert by_source["FDA"]["is_active"] is False
+    assert by_source["FDA"]["domains"] == []
 
 
 @pytest.mark.parametrize(

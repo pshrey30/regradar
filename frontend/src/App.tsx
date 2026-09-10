@@ -10,6 +10,7 @@ import { FilingsList } from './pages/FilingsList'
 import { Login } from './pages/Login'
 import { Metrics } from './pages/Metrics'
 import { Search } from './pages/Search'
+import { SourceConfig } from './pages/SourceConfig'
 import { Webhooks } from './pages/Webhooks'
 
 // Landing pulls in three.js for its 3D hero (~600KB) — code-split so that
@@ -100,6 +101,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Metrics />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/source-config"
+          element={
+            <ProtectedRoute>
+              <SourceConfig />
             </ProtectedRoute>
           }
         />
