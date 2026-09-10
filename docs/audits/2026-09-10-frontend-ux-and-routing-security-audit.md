@@ -1,0 +1,56 @@
+# RegRadar Frontend — UX & Routing Security Audit
+
+**Date:** 2026-09-10
+**Scope:** FE-01 through FE-09 as built (Landing, Login, Filings List, Filing Detail, Ask RegRadar, Webhooks, API Keys, Metrics & Cost, Source Configuration, and the shared AppShell/routing layer).
+**Method:** Direct source read of `frontend/src/` (pages, components, auth, lib/api.ts, App.tsx, main.tsx) and the relevant backend cookie/RLS code, on the worktree at commit `fcfa909`.
+
+## Overall posture
+
+The backend security posture is genuinely solid: every role-gated screen's real data access is enforced server-side (RLS + explicit role checks), the session cookie is `HttpOnly` + `SameSite=Lax` + `Secure` outside dev, the bfcache/back-button-after-logout fix is centralized and covers every route uniformly, and there's no case of a secret, token, or key ever appearing in a URL. Nothing found here is a "data actually leaked" finding.
+
+The gaps are consistently on the **client-side polish and defense-in-depth** side: route access control is enforced by nav-hiding + waiting for the backend's 403, not by a route guard, which is standard and *safe* here but produces a rough UX moment (flash of full page chrome, action buttons that are always going to fail, no "you don't have access" page). Loading-state coverage and the destructive-confirm/show-once-secret pattern are inconsistently applied across the newer screens (Webhooks/API Keys/Metrics/Source Config) versus the more polished original screens (Filings List/Filing Detail). Nothing here blocks a launch; the fix list below is genuinely a punch list, not a stop-ship list.
+
+---
+
+## UX Findings
+
+| Screen/Area | Severity | Issue | Recommended fix |
+|---|---|---|---|
+| Webhooks, API Keys | P1 | List query has no `isPending` branch — page shows the heading and "Create" button immediately, then a blank gap until data or an error arrives, unlike Filings List's skeleton rows. | Add a loading state (skeleton or "Loading…" card) matching the Filings List pattern. |
+| Modal (shared, used by Webhooks/API Keys secret-reveal and destructive-confirm) | P1 | No focus trap and no focus management: opening a modal doesn't move focus into it, closing doesn't restore focus to the trigger element, and Tab can cycle out to the page behind it. | Add a minimal focus trap (focus first focusable element on open, restore on close, contain Tab within the dialog) — this is a real keyboard/screen-reader usability gap, not just a nice-to-have. |
+| API Keys, Webhooks, Metrics, Source Config | P1 | When a role that can't use the screen reaches it directly (see routing findings below), the page still renders its full action UI (e.g. a "Create key" button on API Keys) above a generic red error card, rather than a distinct "you don't have access" state. | When the list/query error is a 403, render a dedicated "You don't have permission to view this" empty state instead of the generic error card + still-clickable action buttons. |
+| Metrics & Cost | P2 | Trend chart is a bare custom SVG line with no hover/tooltip for exact values — fine for a trend shape, weak for reading a specific data point. | Add a simple hover tooltip showing date + value per series if this screen gets more use. |
+| Login | P2 | Signup mode has no password-confirmation field, and no show/hide-password toggle in either mode. | Add a confirm-password field for signup; consider a show/hide toggle — small trust-building details for a security product. |
+| Login | P2 | No "forgot password" affordance at all (not out of scope per any ticket, just genuinely absent). | Out of current ticket scope — flag for a future ticket if password auth stays supported long-term. |
+| Source Configuration | P2 | Domains are modeled as one shared set applied to every active source (documented in-code as a deliberate simplification) — if a future need arises to monitor different domains per regulator, the UI would need rework. | No action needed now; flagged so it isn't rediscovered as a "bug" later. |
+| AppShell nav | P2 | Nav items for roles with zero visible items (e.g., a hypothetical role with only "Filings") would still show a mostly-empty sidebar — not currently reachable by any real role, but worth a glance if new roles are added. | No action needed now. |
+| Ask RegRadar (Search) | P2 | Degraded-mode banner (when answer generation fails) is functional but doesn't distinguish "no results" from "answer generation degraded but results shown" as strongly in visual weight as it could. | Minor copy/visual tightening if this path gets exercised more in practice. |
+| Filings List, Filing Detail | — (positive) | Consistent loading/empty/error states, URL-synced filters, correct role-based field omission handled entirely server-side. | No action — this is the bar the newer screens should match. |
+
+---
+
+## Routing & Security Findings
+
+| Area | Severity | Issue | Recommended fix |
+|---|---|---|---|
+| `App.tsx` — `ProtectedRoute` | P1 | `ProtectedRoute` only checks authentication status (`loading`/`authenticated`/`unauthenticated`), never role. Every protected route — `/webhooks`, `/api-keys`, `/metrics`, `/source-config`, `/search` — is reachable by typing the URL directly regardless of role; the *only* gate today is (a) the nav item being hidden and (b) the backend's real 403 once the page's query fires. No data is exposed (403 responses carry no data, confirmed for API-09/API-10/API-08/API-06), but a role-blocked user can reach a fully-rendered page shell with action buttons before the error resolves. | Add a lightweight route-level role check (reuse `canSeeNavItem`/`_NAV_ITEM_ROLES` from `useAuth.ts`) in `ProtectedRoute`, redirecting to `/filings` (or a dedicated "not authorized" page) for a role that can't see that route — belt-and-suspenders on top of the already-solid backend enforcement. |
+| `useAuth.ts` — `_NAV_ITEM_ROLES` comment | P2 | The comment above `_NAV_ITEM_ROLES` still says "FE-03 through FE-09's own screens aren't built yet... this only gates which nav *links* show, not any route's actual data" — that's stale now that all of FE-03–FE-09 exist and the comment's own caveat is exactly the P1 finding above. | Update the comment once the route-guard fix above lands (or at minimum, correct it now to stop it reading as an intentional, still-true design note). |
+| `AuthContext.tsx` — bfcache handling | Positive | The `pageshow`/`event.persisted` re-validation is centralized in one provider that every protected route reads from — this is the *correct* architecture (fix once, cover everywhere), not a per-page patch, and it re-runs a real `/v1/me` check rather than trusting cached client state. | No action — this is solid and should be the pattern for any future global auth-adjacent behavior. |
+| `lib/api.ts` — 401 handling | Positive | Every `apiFetch` call funnels through one `onUnauthorized` hook wired once in `AuthContext`; a 401 from *any* endpoint, on *any* page, flips global auth state and `ProtectedRoute` redirects — there's no page-by-page reimplementation to drift out of sync. | No action. |
+| Login flow / redirects | Positive | No open-redirect surface found: the only query param read on `/login` (`?error=`) is used purely for display via a fixed lookup table, never as a navigation target; the post-login redirect target (`/filings`) is hardcoded, not attacker-controllable. | No action. |
+| Secrets in URLs | Positive | Grepped every page for query-string/path-param usage of keys, secrets, or tokens — none found. Webhook HMAC secrets and API key plaintext values are both passed only in-memory (mutation response → component state), never round-tripped through the URL or `localStorage`. | No action. |
+| Session cookie | Positive | `HttpOnly`, `SameSite=Lax`, `Secure` outside `ENV=development` (confirmed in `src/regradar/api/routers/auth.py`'s `_cookie_kwargs`). `SameSite=Lax` blocks the cookie on cross-site `fetch`/XHR (the actual CSRF vector for this app's JSON API, since nothing state-changing is a plain `<a>`/`<form>` GET), so the app is reasonably protected against classic CSRF without a separate anti-CSRF token. | P2, defense-in-depth only: consider an explicit CSRF token (double-submit cookie) if the app ever needs to support a browser/config where `SameSite=Lax` enforcement can't be relied on, or if a state-changing endpoint is ever exposed as a GET. Not urgent given the current all-POST/DELETE mutation surface. |
+| `FilingDetail.tsx` — external link | Positive | "View Original Document" uses `window.open(url, '_blank', 'noopener,noreferrer')` — correctly defends against reverse-tabnabbing. | No action. |
+| Reachable-but-gated pages (Webhooks, API Keys, Metrics, Source Config) | P2 | Even though no data leaks, a role-blocked user's browser *does* issue the real network request (visible in devtools Network tab) before the 403 renders — this is normal and not a vulnerability (the response body itself carries no sensitive data on a 403), but it does mean the *existence* and *shape* of these endpoints is discoverable by any authenticated role, not just the intended one. | Acceptable as-is; the P1 route-guard fix above would incidentally prevent the request from firing at all for a blocked role, which is a nice side benefit if implemented. |
+
+---
+
+## Prioritized Fix List
+
+1. **(P1 — routing)** Add a role check to `ProtectedRoute` in `App.tsx` (reusing `canSeeNavItem`) so a role blocked from a screen is redirected before the page renders, instead of relying solely on nav-hiding + the backend's 403.
+2. **(P1 — UX)** Add a loading state to the Webhooks and API Keys list queries, matching the skeleton pattern already used on Filings List.
+3. **(P1 — a11y)** Add focus trap + focus restoration to the shared `Modal` component (used by every show-once-secret and destructive-confirm flow across Webhooks and API Keys).
+4. **(P1 — UX)** Render a dedicated "you don't have permission" state on API Keys/Webhooks/Metrics/Source Config when the list query fails with 403, instead of showing the full action UI above a generic error card.
+5. **(P2 — cleanup)** Update the stale comment in `useAuth.ts` above `_NAV_ITEM_ROLES` once the route-guard fix lands.
+6. **(P2 — UX)** Add a password-confirmation field to Login's signup mode.
+7. **(P2 — defense-in-depth)** Consider an explicit CSRF token if the mutation surface ever grows to include non-JSON/GET-based state changes.
