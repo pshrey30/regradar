@@ -21,6 +21,7 @@ export function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [displayName, setDisplayName] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -95,19 +96,29 @@ export function Login() {
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@example.com"
           />
-          <Input
-            label="Password"
-            type="password"
-            required
-            minLength={mode === 'signup' ? 8 : undefined}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder={mode === 'signup' ? 'At least 8 characters' : undefined}
-          />
+          <div className="relative">
+            <Input
+              label="Password"
+              type={showPassword ? 'text' : 'password'}
+              required
+              minLength={mode === 'signup' ? 8 : undefined}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={mode === 'signup' ? 'At least 8 characters' : undefined}
+              className="pr-14"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((show) => !show)}
+              className="absolute bottom-0 right-0 flex h-10 items-center pr-3 text-xs font-medium text-primary-600 hover:underline"
+            >
+              {showPassword ? 'Hide' : 'Show'}
+            </button>
+          </div>
           {mode === 'signup' && (
             <Input
               label="Confirm password"
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               required
               minLength={8}
               value={confirmPassword}

@@ -76,17 +76,35 @@ export function Search() {
       {mutation.isSuccess && (
         <div className="flex flex-col gap-4">
           {mutation.data.degraded && (
-            <div className="flex items-center justify-between gap-4 rounded-lg border border-risk-medium bg-white p-4 text-sm text-risk-medium">
-              <span>
-                Natural-language answering is temporarily limited — showing raw search results
-                instead.
-              </span>
+            <div className="flex items-start justify-between gap-4 rounded-lg border-2 border-risk-medium bg-white p-4 text-sm">
+              <div className="flex items-start gap-2.5">
+                <svg
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                  className="mt-0.5 h-5 w-5 shrink-0 text-risk-medium"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l6.28 11.178c.75 1.334-.213 2.986-1.742 2.986H3.72c-1.53 0-2.493-1.652-1.743-2.986L8.257 3.1ZM10 7a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 10 7Zm0 8a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+                <div>
+                  <p className="font-semibold text-slate-900">Answering is temporarily limited</p>
+                  <p className="mt-0.5 text-slate-600">
+                    Natural-language answering is unavailable right now — the raw search results
+                    below are still accurate.
+                  </p>
+                </div>
+              </div>
               {submittedQuery && (
                 <Button
                   variant="secondary"
                   size="sm"
                   loading={mutation.isPending}
                   onClick={() => mutation.mutate(submittedQuery)}
+                  className="shrink-0"
                 >
                   Retry answer
                 </Button>
