@@ -20,11 +20,33 @@ from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
 from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.delivery.webhook_dispatcher import WebhookValidationError, validate_webhook_url
-from regradar.models.enums import ApiKeyRole
+from regradar.models.delivery import Delivery
+from regradar.models.enums import ApiKeyRole, DeliveryStatus
 from regradar.models.webhook import Webhook
 from regradar.schemas.webhooks import WebhookCreateRequest, WebhookCreateResponse, WebhookResponse
 
 router = APIRouter()
+
+# FE-06's list screen only needs a recent-health signal, not a full
+# history — the last 10 attempts is enough to show "healthy" vs "a string
+# of recent failures" without an unbounded query per webhook.
+_RECENT_DELIVERY_LIMIT = 10
+
+
+async def _delivery_health(
+    db: AsyncSession, webhook_id: uuid.UUID
+) -> tuple[DeliveryStatus | None, datetime | None, int]:
+    stmt = (
+        select(Delivery)
+        .where(Delivery.webhook_id == webhook_id)
+        .order_by(Delivery.created_at.desc())
+        .limit(_RECENT_DELIVERY_LIMIT)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    if not rows:
+        return None, None, 0
+    failure_count = sum(1 for row in rows if row.status == DeliveryStatus.FAILED)
+    return rows[0].status, rows[0].created_at, failure_count
 
 
 def _generate_hmac_secret() -> str:
@@ -82,17 +104,23 @@ async def list_webhooks(
         stmt = stmt.where(Webhook.api_key_id == key.id)
     rows = (await db.execute(stmt)).scalars().all()
 
-    return [
-        WebhookResponse(
-            id=row.id,
-            url=row.url,
-            is_active=row.is_active,
-            filter_domain=row.filter_domain,
-            filter_min_risk=row.filter_min_risk,
-            created_at=row.created_at,
+    responses = []
+    for row in rows:
+        last_status, last_at, failure_count = await _delivery_health(db, row.id)
+        responses.append(
+            WebhookResponse(
+                id=row.id,
+                url=row.url,
+                is_active=row.is_active,
+                filter_domain=row.filter_domain,
+                filter_min_risk=row.filter_min_risk,
+                created_at=row.created_at,
+                last_delivery_status=last_status,
+                last_delivery_at=last_at,
+                recent_failure_count=failure_count,
+            )
         )
-        for row in rows
-    ]
+    return responses
 
 
 @router.delete("/v1/webhooks/{webhook_id}", status_code=204)

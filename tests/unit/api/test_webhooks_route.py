@@ -119,16 +119,26 @@ def _webhook_row(*, webhook_id: uuid.UUID, api_key_id: uuid.UUID, url: str = "ht
     return row
 
 
+def _empty_scalars_result() -> MagicMock:
+    result = MagicMock()
+    result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    return result
+
+
 def test_list_webhooks_never_includes_hmac_secret(monkeypatch: pytest.MonkeyPatch):
     key_id = _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
     mock_db = _mock_route_db(monkeypatch)
-    result = MagicMock()
+    webhook_result = MagicMock()
     scalars = MagicMock()
     scalars.all = MagicMock(
         return_value=[_webhook_row(webhook_id=uuid.uuid4(), api_key_id=key_id)]
     )
-    result.scalars = MagicMock(return_value=scalars)
-    mock_db.execute = AsyncMock(return_value=result)
+    webhook_result.scalars = MagicMock(return_value=scalars)
+    # execute() call order: the webhook list query, then one delivery-
+    # health query per returned webhook (here, exactly one webhook).
+    mock_db.execute = AsyncMock(
+        side_effect=[MagicMock(), MagicMock(), MagicMock(), webhook_result, _empty_scalars_result()]
+    )
 
     response = TestClient(create_app()).get(
         "/v1/webhooks", headers={"Authorization": "Bearer rr_test-key"}
@@ -143,17 +153,87 @@ def test_list_webhooks_never_includes_hmac_secret(monkeypatch: pytest.MonkeyPatc
 def test_list_webhooks_scopes_query_to_own_key_for_non_admin(monkeypatch: pytest.MonkeyPatch):
     key_id = _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ENG_LEAD)
     mock_db = _mock_route_db(monkeypatch)
-    result = MagicMock()
-    scalars = MagicMock()
-    scalars.all = MagicMock(return_value=[])
-    result.scalars = MagicMock(return_value=scalars)
-    mock_db.execute = AsyncMock(return_value=result)
+    mock_db.execute = AsyncMock(
+        side_effect=[MagicMock(), MagicMock(), MagicMock(), _empty_scalars_result()]
+    )
 
     TestClient(create_app()).get("/v1/webhooks", headers={"Authorization": "Bearer rr_test-key"})
 
     executed_stmt = mock_db.execute.call_args[0][0]
     compiled = str(executed_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert str(key_id).replace("-", "") in compiled.replace("-", "")
+
+
+def _delivery_row(*, status: str, created_at):
+    row = MagicMock()
+    row.status = status
+    row.created_at = created_at
+    return row
+
+
+def test_list_webhooks_reports_no_deliveries_as_null_health(monkeypatch: pytest.MonkeyPatch):
+    key_id = _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_route_db(monkeypatch)
+    webhook_result = MagicMock()
+    webhook_result.scalars = MagicMock(
+        return_value=MagicMock(
+            all=MagicMock(return_value=[_webhook_row(webhook_id=uuid.uuid4(), api_key_id=key_id)])
+        )
+    )
+    mock_db.execute = AsyncMock(
+        side_effect=[MagicMock(), MagicMock(), MagicMock(), webhook_result, _empty_scalars_result()]
+    )
+
+    response = TestClient(create_app()).get(
+        "/v1/webhooks", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    body = response.json()[0]
+    assert body["last_delivery_status"] is None
+    assert body["last_delivery_at"] is None
+    assert body["recent_failure_count"] == 0
+
+
+def test_list_webhooks_reports_recent_failure_count_and_last_status(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from datetime import UTC, datetime
+
+    key_id = _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_route_db(monkeypatch)
+    webhook_id = uuid.uuid4()
+    webhook_result = MagicMock()
+    webhook_result.scalars = MagicMock(
+        return_value=MagicMock(
+            all=MagicMock(return_value=[_webhook_row(webhook_id=webhook_id, api_key_id=key_id)])
+        )
+    )
+    # Most-recent-first, matching the route's own ORDER BY created_at DESC.
+    latest = datetime(2026, 1, 3, tzinfo=UTC)
+    delivery_result = MagicMock()
+    delivery_result.scalars = MagicMock(
+        return_value=MagicMock(
+            all=MagicMock(
+                return_value=[
+                    _delivery_row(status="sent", created_at=latest),
+                    _delivery_row(status="failed", created_at=datetime(2026, 1, 2, tzinfo=UTC)),
+                    _delivery_row(status="failed", created_at=datetime(2026, 1, 1, tzinfo=UTC)),
+                ]
+            )
+        )
+    )
+    mock_db.execute = AsyncMock(
+        side_effect=[MagicMock(), MagicMock(), MagicMock(), webhook_result, delivery_result]
+    )
+
+    response = TestClient(create_app()).get(
+        "/v1/webhooks", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    body = response.json()[0]
+    assert body["last_delivery_status"] == "sent"
+    assert body["last_delivery_at"] == "2026-01-03T00:00:00Z"
+    assert body["recent_failure_count"] == 2
 
 
 def test_delete_own_webhook_succeeds(monkeypatch: pytest.MonkeyPatch):

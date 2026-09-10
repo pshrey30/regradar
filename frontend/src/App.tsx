@@ -8,6 +8,7 @@ import { FilingDetail } from './pages/FilingDetail'
 import { FilingsList } from './pages/FilingsList'
 import { Login } from './pages/Login'
 import { Search } from './pages/Search'
+import { Webhooks } from './pages/Webhooks'
 
 // Landing pulls in three.js for its 3D hero (~600KB) — code-split so that
 // weight is only ever fetched by a logged-out visitor hitting "/", never
@@ -73,6 +74,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Search />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/webhooks"
+          element={
+            <ProtectedRoute>
+              <Webhooks />
             </ProtectedRoute>
           }
         />
