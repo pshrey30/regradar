@@ -7,6 +7,7 @@ from regradar.models.delivery import Delivery
 from regradar.models.eval_run import EvalRun
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
+from regradar.models.invite import Invite
 from regradar.models.organization import Organization
 from regradar.models.organization_delivery_settings import OrganizationDeliverySettings
 from regradar.models.source_config import SourceConfig
@@ -20,6 +21,7 @@ __all__ = [
     "Extraction",
     "Filing",
     "FilingChunk",
+    "Invite",
     "Organization",
     "OrganizationDeliverySettings",
     "SourceConfig",

@@ -14,11 +14,22 @@ project, not a scalability requirement.
 
 No organization-management surface exists yet (SEC-05's own precedent,
 still true) — a first-time signup (either method) is provisioned into the
-single, first-created organization, same as `create-api-key`. It's
-assigned ApiKeyRole.ANALYST, not Admin: self-service sign-in has no
-invitation step, so defaulting a new identity to a low-privilege role is
-the safe choice — an actual Admin would need to be granted via
-`create-api-key` directly, same as today.
+single, first-created organization, same as `create-api-key`.
+
+Every signup path — email/password AND Google SSO — is invite-gated: both
+require a valid, unused code from an Admin-created `invites` row
+(api/routers/invites.py). Gating only one path would make the whole
+requirement trivially bypassable (anyone could just use the other one),
+so `google_login`/`google_callback` carry an invite_code + role through
+the OAuth round-trip in a second short-lived cookie, mirroring how
+`oauth_state` is already carried. The invite itself is purely a signup
+gate — it carries no role. The person signing up chooses their own role,
+but only from schemas.auth.SELF_SELECTABLE_ROLES, which excludes Admin;
+an actual Admin account is only ever created by another Admin directly
+(`create-api-key`), never through self-service signup. An invite is only
+ever consumed when it actually creates a NEW account — a returning
+Google user logging back in via an existing row never touches the invite
+system at all.
 
 Email/password and Google SSO are two independent signup paths into the
 same api_keys table, not linked accounts — signing up with the same email
@@ -30,10 +41,11 @@ asking for it.
 """
 
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Cookie, Depends, Response
 from fastapi.responses import JSONResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.api.deps import AuthenticatedKey
@@ -53,14 +65,22 @@ from regradar.core.sso import (
 )
 from regradar.models.api_key import ApiKey
 from regradar.models.enums import ApiKeyRole
+from regradar.models.invite import Invite
 from regradar.models.organization import Organization
-from regradar.schemas.auth import ChangePasswordRequest, LoginRequest, SignupRequest
+from regradar.schemas.auth import (
+    SELF_SELECTABLE_ROLES,
+    ChangePasswordRequest,
+    LoginRequest,
+    SignupRequest,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 _STATE_COOKIE_NAME = "oauth_state"
+_INVITE_COOKIE_NAME = "oauth_invite_code"
+_ROLE_COOKIE_NAME = "oauth_role"
 _STATE_COOKIE_MAX_AGE_SECONDS = 600  # a login attempt has 10 minutes to complete
 _SESSION_COOKIE_NAME = "regradar_session"
 _LOGIN_LOCKOUT_THRESHOLD = 5
@@ -69,6 +89,31 @@ _LOGIN_LOCKOUT_WINDOW_SECONDS = 15 * 60
 _INVALID_LOGIN_ERROR = ApiError(
     status_code=401, code="invalid_credentials", message="Incorrect email or password."
 )
+_INVALID_INVITE_ERROR = ApiError(
+    status_code=422,
+    code="invalid_invite_code",
+    message="Invalid or already-used invite code.",
+)
+
+
+async def _consume_invite(db: AsyncSession, *, code: str, used_by_email: str) -> None:
+    """Atomically validates and consumes an invite code — the `WHERE
+    used_at IS NULL` conditional UPDATE is what makes a code single-use
+    even under two concurrent signups racing the same code (same pattern
+    SEC-04 established for duplicate-filing protection). Raises
+    ApiError(422) if the code doesn't exist or was already used; the
+    caller decides how to surface that (signup() lets it become the
+    request's own error response; the Google flow catches it and turns
+    it into a redirect instead, since that flow can't return raw JSON)."""
+    code_hash = hash_api_key(code)
+    result = await db.execute(
+        update(Invite)
+        .where(Invite.code_hash == code_hash, Invite.used_at.is_(None))
+        .values(used_at=datetime.now(UTC), used_by_email=used_by_email)
+        .returning(Invite.id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise _INVALID_INVITE_ERROR
 
 
 def _cookie_kwargs(*, max_age: int) -> dict:
@@ -86,19 +131,76 @@ def _cookie_kwargs(*, max_age: int) -> dict:
 
 
 @router.get("/v1/auth/google/login")
-async def google_login() -> RedirectResponse:
+async def google_login(
+    invite_code: str | None = None, role: ApiKeyRole | None = None
+) -> RedirectResponse:
+    """`invite_code`/`role` are optional here on purpose: this one link
+    serves both a returning user logging back in (no invite needed at
+    all — they already have an account) and a first-time signup (invite
+    required). This endpoint can't tell which case it is yet — Google
+    hasn't identified anyone — so it only pre-validates an invite when
+    one was actually supplied (the frontend only supplies one from
+    signup mode), and defers the real, mandatory check entirely to
+    google_callback -> _find_or_create_api_key, which knows for certain
+    whether this is a new row or an existing one."""
+    settings = get_settings()
+    login_url = f"{settings.frontend_base_url}/login"
+
+    if role is not None and role not in SELF_SELECTABLE_ROLES:
+        return RedirectResponse(url=f"{login_url}?error=invalid_role", status_code=307)
+
+    if invite_code is not None:
+        # Fail fast, before ever sending the user to Google: a read-only
+        # check here so an invalid code shows an error immediately instead
+        # of after a full round trip through Google's consent screen. This
+        # is NOT the real enforcement point (a code could still be
+        # consumed by someone else in the gap between here and the
+        # callback) — that happens atomically in _find_or_create_api_key,
+        # which re-validates for real.
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            await set_rls_context(db, role="service")
+            code_hash = hash_api_key(invite_code)
+            result = await db.execute(
+                select(Invite.id).where(Invite.code_hash == code_hash, Invite.used_at.is_(None))
+            )
+            if result.scalar_one_or_none() is None:
+                return RedirectResponse(url=f"{login_url}?error=invalid_invite", status_code=307)
+
     state = generate_state_token()
     redirect = RedirectResponse(url=build_google_authorize_url(state=state), status_code=307)
     redirect.set_cookie(
         _STATE_COOKIE_NAME, state, **_cookie_kwargs(max_age=_STATE_COOKIE_MAX_AGE_SECONDS)
     )
+    # Carried through the OAuth round-trip the same way oauth_state is —
+    # google_callback needs both to gate/role a first-time signup exactly
+    # like the email/password path does. Only set when actually supplied;
+    # a returning-user login leaves these unset, and the callback treats
+    # a missing cookie the same as an absent query param (both are None).
+    if invite_code is not None:
+        redirect.set_cookie(
+            _INVITE_COOKIE_NAME, invite_code, **_cookie_kwargs(max_age=_STATE_COOKIE_MAX_AGE_SECONDS)
+        )
+    if role is not None:
+        redirect.set_cookie(
+            _ROLE_COOKIE_NAME, role.value, **_cookie_kwargs(max_age=_STATE_COOKIE_MAX_AGE_SECONDS)
+        )
     return redirect
 
 
-async def _find_or_create_api_key(identity: GoogleIdentity) -> str:
+async def _find_or_create_api_key(
+    identity: GoogleIdentity, *, invite_code: str | None, role: ApiKeyRole | None
+) -> str:
     """Returns the new plaintext session token for this identity. Runs as
     `service` — the row this reads/writes doesn't belong to a caller who's
-    authenticated yet (that's the whole point of this endpoint)."""
+    authenticated yet (that's the whole point of this endpoint).
+
+    Raises ApiError (422, invalid_invite_code) if this would create a NEW
+    account and the invite is missing/invalid/already used, or the role
+    isn't self-selectable — the caller (google_callback) turns that into
+    a redirect. A RETURNING user (an existing row already matches this
+    Google identity) never touches the invite system at all — invites
+    gate account *creation*, not every future login."""
     session_factory = get_session_factory()
     async with session_factory() as db:
         await set_rls_context(db, role="service")
@@ -111,13 +213,17 @@ async def _find_or_create_api_key(identity: GoogleIdentity) -> str:
 
         plaintext_token = generate_api_key()
         if key is None:
+            if not invite_code or role not in SELF_SELECTABLE_ROLES:
+                raise _INVALID_INVITE_ERROR
+            await _consume_invite(db, code=invite_code, used_by_email=identity.email)
+
             org_id = (
                 await db.execute(select(Organization.id).order_by(Organization.created_at.asc()).limit(1))
             ).scalar_one()
             key = ApiKey(
                 organization_id=org_id,
                 owner_label=identity.name or identity.email,
-                role=ApiKeyRole.ANALYST,
+                role=role,
                 sso_provider="google",
                 sso_subject_id=identity.subject_id,
             )
@@ -134,9 +240,16 @@ async def google_callback(
     code: str,
     state: str,
     oauth_state: str | None = Cookie(default=None),
+    oauth_invite_code: str | None = Cookie(default=None),
+    oauth_role: str | None = Cookie(default=None),
 ) -> RedirectResponse:
     settings = get_settings()
     login_url = f"{settings.frontend_base_url}/login"
+
+    def _clear_oauth_cookies(response: RedirectResponse) -> None:
+        response.delete_cookie(_STATE_COOKIE_NAME, path="/")
+        response.delete_cookie(_INVITE_COOKIE_NAME, path="/")
+        response.delete_cookie(_ROLE_COOKIE_NAME, path="/")
 
     # CSRF check: the state param Google echoed back must match the value
     # this exact browser was given at /v1/auth/google/login — anyone else
@@ -152,10 +265,19 @@ async def google_callback(
         logger.warning("Google OAuth callback failed: %s", exc)
         return RedirectResponse(url=f"{login_url}?error=sso_failed", status_code=307)
 
-    session_token = await _find_or_create_api_key(identity)
+    try:
+        session_token = await _find_or_create_api_key(
+            identity,
+            invite_code=oauth_invite_code,
+            role=ApiKeyRole(oauth_role) if oauth_role else None,
+        )
+    except ApiError:
+        redirect = RedirectResponse(url=f"{login_url}?error=invalid_invite", status_code=307)
+        _clear_oauth_cookies(redirect)
+        return redirect
 
     redirect = RedirectResponse(url=settings.frontend_base_url, status_code=307)
-    redirect.delete_cookie(_STATE_COOKIE_NAME, path="/")
+    _clear_oauth_cookies(redirect)
     redirect.set_cookie(
         _SESSION_COOKIE_NAME,
         session_token,
@@ -264,13 +386,20 @@ async def signup(payload: SignupRequest) -> Response:
                 message="An account with this email already exists.",
             )
 
+        # Consumed only after the email_taken check, and inside the same
+        # transaction as the row this creates — a failed attempt (e.g. the
+        # email really was taken) never burns a real invite, and if
+        # anything below fails, the whole transaction (including this
+        # UPDATE) rolls back together.
+        await _consume_invite(db, code=payload.invite_code, used_by_email=payload.email)
+
         org_id = (
             await db.execute(select(Organization.id).order_by(Organization.created_at.asc()).limit(1))
         ).scalar_one()
         key = ApiKey(
             organization_id=org_id,
             owner_label=payload.display_name or payload.email,
-            role=ApiKeyRole.ANALYST,
+            role=payload.role,
             email=payload.email,
             password_hash=password_hash,
             # A row's key_hash column is required and unique even though

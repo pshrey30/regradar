@@ -28,6 +28,8 @@ from regradar.core.passwords import hash_password
 from regradar.models.enums import ApiKeyRole
 from regradar.schemas.auth import LoginRequest, SignupRequest
 
+_VALID_SIGNUP_KWARGS = {"invite_code": "rrinv_test-code", "role": ApiKeyRole.ANALYST}
+
 
 def _mock_row(*, email: str, password: str, is_active: bool = True) -> MagicMock:
     row = MagicMock()
@@ -64,6 +66,53 @@ def _patch_db(monkeypatch: pytest.MonkeyPatch, *, found_row=None, org_id=None):
     return mock_db
 
 
+def _patch_signup_db(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    existing_email_row=None,
+    invite_valid: bool = True,
+    org_id=None,
+):
+    """Sequences the three queries signup() issues in order: the
+    email-uniqueness check, the invite-consuming UPDATE...RETURNING, and
+    (only if both of those pass) the org lookup — matching exactly what
+    the real route does, so a test can't accidentally pass by mocking
+    queries out of order."""
+    mock_db = AsyncMock()
+
+    email_result = MagicMock()
+    email_result.scalar_one_or_none = MagicMock(return_value=existing_email_row)
+
+    invite_result = MagicMock()
+    invite_result.scalar_one_or_none = MagicMock(return_value=uuid4() if invite_valid else None)
+
+    org_result = MagicMock()
+    org_result.scalar_one = MagicMock(return_value=org_id or uuid4())
+
+    if existing_email_row is not None:
+        queue = [email_result]
+    elif not invite_valid:
+        queue = [email_result, invite_result]
+    else:
+        queue = [email_result, invite_result, org_result]
+    real_results = iter(queue)
+
+    async def _execute(stmt, *args, **kwargs):
+        if "set_config" in getattr(stmt, "text", ""):
+            return MagicMock()
+        return next(real_results)
+
+    mock_db.execute = AsyncMock(side_effect=_execute)
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(auth_module, "get_session_factory", lambda: mock_session_factory)
+    return mock_db
+
+
 @pytest.fixture(autouse=True)
 def _mock_redis(monkeypatch: pytest.MonkeyPatch):
     client = AsyncMock()
@@ -77,10 +126,15 @@ def _mock_redis(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.asyncio
 async def test_signup_creates_account_without_logging_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_db = _patch_db(monkeypatch, found_row=None, org_id=uuid4())
+    mock_db = _patch_signup_db(monkeypatch, org_id=uuid4())
 
     response = await auth_module.signup(
-        SignupRequest(email="new@example.com", password="a-real-password", display_name="New Person")
+        SignupRequest(
+            email="new@example.com",
+            password="a-real-password",
+            display_name="New Person",
+            **_VALID_SIGNUP_KWARGS,
+        )
     )
 
     assert response.status_code == 201
@@ -95,21 +149,66 @@ async def test_signup_creates_account_without_logging_in(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_signup_uses_the_chosen_self_selectable_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_db = _patch_signup_db(monkeypatch, org_id=uuid4())
+
+    await auth_module.signup(
+        SignupRequest(
+            email="new@example.com",
+            password="a-real-password",
+            invite_code="rrinv_test-code",
+            role=ApiKeyRole.LEGAL_COUNSEL,
+        )
+    )
+
+    created = mock_db.add.call_args.args[0]
+    assert created.role == ApiKeyRole.LEGAL_COUNSEL
+
+
+def test_signup_request_rejects_admin_role() -> None:
+    with pytest.raises(Exception, match="Not a role you can sign up as"):
+        SignupRequest(
+            email="new@example.com",
+            password="a-real-password",
+            invite_code="rrinv_test-code",
+            role=ApiKeyRole.ADMIN,
+        )
+
+
+@pytest.mark.asyncio
 async def test_signup_rejects_duplicate_email(monkeypatch: pytest.MonkeyPatch) -> None:
     existing = _mock_row(email="taken@example.com", password="whatever123")
-    mock_db = _patch_db(monkeypatch, found_row=existing)
+    mock_db = _patch_signup_db(monkeypatch, existing_email_row=existing)
 
     with pytest.raises(ApiError) as exc_info:
-        await auth_module.signup(SignupRequest(email="taken@example.com", password="a-real-password"))
+        await auth_module.signup(
+            SignupRequest(email="taken@example.com", password="a-real-password", **_VALID_SIGNUP_KWARGS)
+        )
 
     assert exc_info.value.status_code == 409
     mock_db.add.assert_not_called()
 
 
 @pytest.mark.asyncio
+async def test_signup_rejects_invalid_invite_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_db = _patch_signup_db(monkeypatch, invite_valid=False)
+
+    with pytest.raises(ApiError) as exc_info:
+        await auth_module.signup(
+            SignupRequest(email="new@example.com", password="a-real-password", **_VALID_SIGNUP_KWARGS)
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "invalid_invite_code"
+    mock_db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_signup_rejects_weak_password() -> None:
     with pytest.raises(ApiError) as exc_info:
-        await auth_module.signup(SignupRequest(email="new@example.com", password="short"))
+        await auth_module.signup(
+            SignupRequest(email="new@example.com", password="short", **_VALID_SIGNUP_KWARGS)
+        )
 
     assert exc_info.value.status_code == 422
 

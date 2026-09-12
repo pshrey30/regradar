@@ -9,9 +9,22 @@ import { API_BASE_URL, ApiError, apiFetch } from '../lib/api'
 const _ERROR_MESSAGES: Record<string, string> = {
   state_mismatch: 'Your login attempt expired or was invalid. Please try again.',
   sso_failed: 'Google sign-in failed. Please try again.',
+  invalid_invite: 'That invite code is invalid or has already been used.',
+  invalid_role: 'Not a valid role to sign up as.',
 }
 
 type Mode = 'login' | 'signup'
+
+// Every role a signing-up person may choose for themselves — Admin is
+// deliberately absent. An Admin account is only ever granted by another
+// Admin (Manage Users), never self-selected at signup — see
+// schemas/auth.py's SELF_SELECTABLE_ROLES, which this mirrors exactly.
+const SELF_SELECTABLE_ROLES = [
+  { value: 'analyst', label: 'Analyst' },
+  { value: 'legal_counsel', label: 'Legal Counsel' },
+  { value: 'eng_lead', label: 'Engineering Lead' },
+  { value: 'executive', label: 'Executive' },
+] as const
 
 export function Login() {
   const [searchParams] = useSearchParams()
@@ -23,6 +36,8 @@ export function Login() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [displayName, setDisplayName] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
+  const [role, setRole] = useState<(typeof SELF_SELECTABLE_ROLES)[number]['value']>('analyst')
   const [formError, setFormError] = useState<string | null>(null)
   const [signupSuccess, setSignupSuccess] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -57,7 +72,13 @@ export function Login() {
       // instead of silently dropping them into the dashboard.
       await apiFetch('/v1/auth/signup', {
         method: 'POST',
-        body: JSON.stringify({ email, password, display_name: displayName || undefined }),
+        body: JSON.stringify({
+          email,
+          password,
+          display_name: displayName || undefined,
+          invite_code: inviteCode,
+          role,
+        }),
         skipAuthRedirect: true,
       })
       setMode('login')
@@ -65,6 +86,7 @@ export function Login() {
       setPassword('')
       setConfirmPassword('')
       setDisplayName('')
+      setInviteCode('')
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
     } finally {
@@ -107,11 +129,35 @@ export function Login() {
           </p>
         )}
 
-        <a href={`${API_BASE_URL}/v1/auth/google/login`}>
-          <Button variant="secondary" size="lg" className="w-full">
-            Sign in with Google
+        <a
+          href={
+            mode === 'signup'
+              ? `${API_BASE_URL}/v1/auth/google/login?${new URLSearchParams({ invite_code: inviteCode, role }).toString()}`
+              : `${API_BASE_URL}/v1/auth/google/login`
+          }
+          // A disabled <button> inside an <a> doesn't actually stop the
+          // anchor's own navigation (only the button's own click handling
+          // is suppressed) — the real guard has to be on the anchor
+          // itself; disabled is left on the Button too, purely for the
+          // correct visual/aria state.
+          onClick={(e) => {
+            if (mode === 'signup' && !inviteCode.trim()) e.preventDefault()
+          }}
+        >
+          <Button
+            variant="secondary"
+            size="lg"
+            className="w-full"
+            disabled={mode === 'signup' && !inviteCode.trim()}
+          >
+            {mode === 'signup' ? 'Sign up with Google' : 'Sign in with Google'}
           </Button>
         </a>
+        {mode === 'signup' && !inviteCode.trim() && (
+          <p className="mt-1.5 text-center text-xs text-slate-400">
+            Enter your invite code below first.
+          </p>
+        )}
 
         <div className="my-4 flex items-center gap-3">
           <div className="h-px flex-1 bg-slate-200" />
@@ -121,12 +167,38 @@ export function Login() {
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           {mode === 'signup' && (
-            <Input
-              label="Name"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Your name"
-            />
+            <>
+              <Input
+                label="Invite code"
+                required
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value)}
+                placeholder="rrinv_..."
+              />
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="signup-role" className="text-sm font-medium text-slate-900">
+                  Role
+                </label>
+                <select
+                  id="signup-role"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as typeof role)}
+                  className="h-10 rounded-md border border-slate-300 px-3 text-sm text-slate-900 focus:border-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-600"
+                >
+                  {SELF_SELECTABLE_ROLES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Input
+                label="Name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Your name"
+              />
+            </>
           )}
           <Input
             label="Email"
@@ -182,6 +254,7 @@ export function Login() {
               setFormError(null)
               setSignupSuccess(false)
               setConfirmPassword('')
+              setInviteCode('')
             }}
           >
             {mode === 'login' ? 'Sign up' : 'Sign in'}

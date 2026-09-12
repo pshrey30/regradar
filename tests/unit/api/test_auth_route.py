@@ -27,6 +27,7 @@ from uuid import uuid4
 
 import pytest
 
+from regradar.api.errors import ApiError
 from regradar.api.routers import auth as auth_module
 from regradar.core.sso import GoogleIdentity, SsoError
 from regradar.models.enums import ApiKeyRole
@@ -42,14 +43,36 @@ def _mock_row(*, sso_subject_id: str | None = None) -> MagicMock:
     return row
 
 
-def _patch_db(monkeypatch: pytest.MonkeyPatch, *, found_row=None, org_id=None):
+def _patch_db(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    found_row=None,
+    invite_valid: bool = True,
+    org_id=None,
+):
+    """Sequences queries in the order the real code issues them for a
+    Google-identity lookup: the sso-identity SELECT, then — only when
+    that comes back empty (a first-time signup) — the invite-consuming
+    UPDATE...RETURNING, then — only if that invite was valid — the org
+    lookup. A returning user (found_row is not None) never reaches the
+    invite/org queries at all, matching _find_or_create_api_key's real
+    control flow."""
     mock_db = AsyncMock()
 
     key_result = MagicMock()
     key_result.scalar_one_or_none = MagicMock(return_value=found_row)
+    invite_result = MagicMock()
+    invite_result.scalar_one_or_none = MagicMock(return_value=uuid4() if invite_valid else None)
     org_result = MagicMock()
     org_result.scalar_one = MagicMock(return_value=org_id or uuid4())
-    real_results = iter([key_result, org_result] if found_row is None else [key_result])
+
+    if found_row is not None:
+        queue = [key_result]
+    elif not invite_valid:
+        queue = [key_result, invite_result]
+    else:
+        queue = [key_result, invite_result, org_result]
+    real_results = iter(queue)
 
     async def _execute(stmt, *args, **kwargs):
         # set_rls_context issues its own set_config calls before every real
@@ -71,18 +94,93 @@ def _patch_db(monkeypatch: pytest.MonkeyPatch, *, found_row=None, org_id=None):
     return mock_db
 
 
+def _patch_invite_check_db(monkeypatch: pytest.MonkeyPatch, *, invite_valid: bool):
+    """google_login issues exactly one query (the invite validity check)
+    — a different shape than _find_or_create_api_key's, so this is its
+    own small helper rather than reusing _patch_db."""
+    mock_db = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=uuid4() if invite_valid else None)
+
+    async def _execute(stmt, *args, **kwargs):
+        if "set_config" in getattr(stmt, "text", ""):
+            return MagicMock()
+        return result
+
+    mock_db.execute = AsyncMock(side_effect=_execute)
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(auth_module, "get_session_factory", lambda: mock_session_factory)
+    return mock_db
+
+
 @pytest.mark.asyncio
-async def test_google_login_redirects_and_sets_state_cookie() -> None:
-    response = await auth_module.google_login()
+async def test_google_login_redirects_and_sets_state_and_invite_cookies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_invite_check_db(monkeypatch, invite_valid=True)
+
+    response = await auth_module.google_login(invite_code="rrinv_test-code", role=ApiKeyRole.ANALYST)
 
     assert response.status_code == 307
     assert "accounts.google.com" in response.headers["location"]
-    assert "oauth_state=" in response.headers.get("set-cookie", "")
+    set_cookie_headers = [
+        v.decode() for k, v in response.raw_headers if k.decode().lower() == "set-cookie"
+    ]
+    assert any(c.startswith("oauth_state=") for c in set_cookie_headers)
+    assert any(c.startswith("oauth_invite_code=rrinv_test-code") for c in set_cookie_headers)
+    assert any(c.startswith("oauth_role=analyst") for c in set_cookie_headers)
+
+
+@pytest.mark.asyncio
+async def test_google_login_with_no_invite_works_for_returning_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain "Sign in with Google" click from Login mode (not signup)
+    passes no invite_code/role at all — must work without ever touching
+    the DB, since this link also serves users who already have an
+    account and need no invite for that."""
+    with patch.object(auth_module, "get_session_factory") as mock_get_session_factory:
+        response = await auth_module.google_login()
+
+    assert response.status_code == 307
+    assert "accounts.google.com" in response.headers["location"]
+    mock_get_session_factory.assert_not_called()
+    set_cookie_headers = [
+        v.decode() for k, v in response.raw_headers if k.decode().lower() == "set-cookie"
+    ]
+    assert not any(c.startswith("oauth_invite_code=") for c in set_cookie_headers)
+    assert not any(c.startswith("oauth_role=") for c in set_cookie_headers)
+
+
+@pytest.mark.asyncio
+async def test_google_login_rejects_admin_role_without_touching_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with patch.object(auth_module, "get_session_factory") as mock_get_session_factory:
+        response = await auth_module.google_login(invite_code="rrinv_test-code", role=ApiKeyRole.ADMIN)
+
+    assert response.status_code == 307
+    assert "error=invalid_role" in response.headers["location"]
+    mock_get_session_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_google_login_rejects_invalid_invite_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_invite_check_db(monkeypatch, invite_valid=False)
+
+    response = await auth_module.google_login(invite_code="rrinv_bad-code", role=ApiKeyRole.ANALYST)
+
+    assert response.status_code == 307
+    assert "error=invalid_invite" in response.headers["location"]
 
 
 @pytest.mark.asyncio
 async def test_google_callback_rejects_missing_state_cookie() -> None:
-    response = await auth_module.google_callback(code="abc", state="xyz", oauth_state=None)
+    response = await auth_module.google_callback(
+        code="abc", state="xyz", oauth_state=None, oauth_invite_code=None, oauth_role=None
+    )
 
     assert response.status_code == 307
     assert "error=state_mismatch" in response.headers["location"]
@@ -90,7 +188,13 @@ async def test_google_callback_rejects_missing_state_cookie() -> None:
 
 @pytest.mark.asyncio
 async def test_google_callback_rejects_mismatched_state() -> None:
-    response = await auth_module.google_callback(code="abc", state="xyz", oauth_state="different")
+    response = await auth_module.google_callback(
+        code="abc",
+        state="xyz",
+        oauth_state="different",
+        oauth_invite_code=None,
+        oauth_role=None,
+    )
 
     assert response.status_code == 307
     assert "error=state_mismatch" in response.headers["location"]
@@ -101,7 +205,9 @@ async def test_google_callback_redirects_on_sso_error() -> None:
     with patch.object(
         auth_module, "exchange_code_for_identity", new=AsyncMock(side_effect=SsoError("boom"))
     ):
-        response = await auth_module.google_callback(code="abc", state="xyz", oauth_state="xyz")
+        response = await auth_module.google_callback(
+            code="abc", state="xyz", oauth_state="xyz", oauth_invite_code=None, oauth_role=None
+        )
 
     assert response.status_code == 307
     assert "error=sso_failed" in response.headers["location"]
@@ -115,12 +221,18 @@ async def test_google_callback_success_sets_session_cookie(monkeypatch: pytest.M
     )
 
     with patch.object(auth_module, "exchange_code_for_identity", new=AsyncMock(return_value=identity)):
-        response = await auth_module.google_callback(code="abc", state="xyz", oauth_state="xyz")
+        response = await auth_module.google_callback(
+            code="abc",
+            state="xyz",
+            oauth_state="xyz",
+            oauth_invite_code="rrinv_test-code",
+            oauth_role="analyst",
+        )
 
     assert response.status_code == 307
-    # This response sets two cookies (deletes oauth_state, sets
-    # regradar_session) — .headers.get() only returns the first Set-Cookie
-    # value, so check every raw header instead.
+    # This response sets multiple cookies (deletes oauth_state/invite/role,
+    # sets regradar_session) — .headers.get() only returns the first
+    # Set-Cookie value, so check every raw header instead.
     set_cookie_headers = [
         v.decode() for k, v in response.raw_headers if k.decode().lower() == "set-cookie"
     ]
@@ -130,7 +242,28 @@ async def test_google_callback_success_sets_session_cookie(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_find_or_create_creates_new_analyst_key_for_unknown_identity(
+async def test_google_callback_redirects_on_invalid_invite(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_db(monkeypatch, found_row=None, invite_valid=False)
+    identity = GoogleIdentity(
+        subject_id="google-sub-999", email="new@example.com", email_verified=True, name="New Person"
+    )
+
+    with patch.object(auth_module, "exchange_code_for_identity", new=AsyncMock(return_value=identity)):
+        response = await auth_module.google_callback(
+            code="abc",
+            state="xyz",
+            oauth_state="xyz",
+            oauth_invite_code="rrinv_bad-code",
+            oauth_role="analyst",
+        )
+
+    assert response.status_code == 307
+    assert "error=invalid_invite" in response.headers["location"]
+    assert "regradar_session=" not in response.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_creates_new_key_with_chosen_role_for_unknown_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mock_db = _patch_db(monkeypatch, found_row=None)
@@ -138,13 +271,34 @@ async def test_find_or_create_creates_new_analyst_key_for_unknown_identity(
         subject_id="google-sub-new", email="new@example.com", email_verified=True, name="New Person"
     )
 
-    await auth_module._find_or_create_api_key(identity)
+    await auth_module._find_or_create_api_key(
+        identity, invite_code="rrinv_test-code", role=ApiKeyRole.EXECUTIVE
+    )
 
     mock_db.add.assert_called_once()
     created = mock_db.add.call_args.args[0]
-    assert created.role == ApiKeyRole.ANALYST
+    assert created.role == ApiKeyRole.EXECUTIVE
     assert created.sso_provider == "google"
     assert created.sso_subject_id == "google-sub-new"
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_rejects_invalid_invite_for_new_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_db = _patch_db(monkeypatch, found_row=None, invite_valid=False)
+    identity = GoogleIdentity(
+        subject_id="google-sub-new", email="new@example.com", email_verified=True, name="New Person"
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        await auth_module._find_or_create_api_key(
+            identity, invite_code="rrinv_bad-code", role=ApiKeyRole.ANALYST
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "invalid_invite_code"
+    mock_db.add.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -157,7 +311,9 @@ async def test_find_or_create_reuses_existing_row_for_known_identity(
         subject_id="google-sub-existing", email="known@example.com", email_verified=True, name="Known"
     )
 
-    token = await auth_module._find_or_create_api_key(identity)
+    # A returning user never touches the invite system — invite_code/role
+    # are irrelevant here and correctly ignored.
+    token = await auth_module._find_or_create_api_key(identity, invite_code=None, role=None)
 
     mock_db.add.assert_not_called()  # no new row — the existing one's key_hash was rotated instead
     assert existing.key_hash != "old-hash"
