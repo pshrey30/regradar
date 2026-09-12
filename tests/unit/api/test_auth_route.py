@@ -168,7 +168,10 @@ async def test_find_or_create_reuses_existing_row_for_known_identity(
 async def test_logout_clears_cookie() -> None:
     response = await auth_module.logout(regradar_session=None)
 
-    assert response.status_code == 307
+    # 303, not 307 — this redirect follows a POST and must convert to GET
+    # on the client (307 would preserve POST, which 404s against the
+    # frontend's static/SPA routing).
+    assert response.status_code == 303
     assert "regradar_session=" in response.headers.get("set-cookie", "")
 
 

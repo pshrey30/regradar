@@ -185,7 +185,16 @@ async def logout(
                 key.key_hash = hash_api_key(generate_api_key())
                 await db.commit()
 
-    redirect = RedirectResponse(url=f"{settings.frontend_base_url}/login", status_code=307)
+    # 303 (See Other), not 307 — this redirect follows a POST, and 307
+    # deliberately preserves the original method on redirect, so the
+    # browser would re-issue this as a POST to /login. The frontend's
+    # dev server (and most static hosts) only serve the SPA's index.html
+    # fallback for GET requests, so a method-preserving redirect here
+    # produced a genuine 404 instead of the login page. 303 is the
+    # correct status for the standard Post/Redirect/Get pattern — it
+    # always converts to GET on the client, regardless of the original
+    # method.
+    redirect = RedirectResponse(url=f"{settings.frontend_base_url}/login", status_code=303)
     redirect.delete_cookie(_SESSION_COOKIE_NAME, path="/")
     return redirect
 
