@@ -172,6 +172,25 @@ async def test_login_locked_out_after_threshold(_mock_redis: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_login_succeeds_when_redis_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch, _mock_redis: AsyncMock
+) -> None:
+    """A Redis outage must degrade login (skip brute-force lockout
+    tracking), never break it outright — the real password check is
+    still the actual security boundary."""
+    _mock_redis.get = AsyncMock(side_effect=ConnectionError("Connection refused"))
+    _mock_redis.incr = AsyncMock(side_effect=ConnectionError("Connection refused"))
+    _mock_redis.delete = AsyncMock(side_effect=ConnectionError("Connection refused"))
+    row = _mock_row(email="user@example.com", password="correct-password")
+    _patch_db(monkeypatch, found_row=row)
+
+    response = await auth_module.login(LoginRequest(email="user@example.com", password="correct-password"))
+
+    assert response.status_code == 200
+    assert "regradar_session=" in response.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
 async def test_login_resets_failure_count_on_success(
     monkeypatch: pytest.MonkeyPatch, _mock_redis: AsyncMock
 ) -> None:

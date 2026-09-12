@@ -195,20 +195,34 @@ def _login_lockout_key(email: str) -> str:
 
 
 async def _is_locked_out(email: str) -> bool:
-    client = get_redis_client()
-    count = await client.get(_login_lockout_key(email))
-    return count is not None and int(count) >= _LOGIN_LOCKOUT_THRESHOLD
+    try:
+        client = get_redis_client()
+        count = await client.get(_login_lockout_key(email))
+        return count is not None and int(count) >= _LOGIN_LOCKOUT_THRESHOLD
+    except Exception:
+        # Matches rate_limit.py's own fail-open convention: a Redis outage
+        # is a real, transient infra failure, not a reason to lock every
+        # login attempt out — brute-force protection is best-effort on top
+        # of the real (still-enforced) password check, not the only guard.
+        logger.warning("Login lockout check failed; failing open.", exc_info=True)
+        return False
 
 
 async def _record_login_failure(email: str) -> None:
-    client = get_redis_client()
-    key = _login_lockout_key(email)
-    await client.incr(key)
-    await client.expire(key, _LOGIN_LOCKOUT_WINDOW_SECONDS)
+    try:
+        client = get_redis_client()
+        key = _login_lockout_key(email)
+        await client.incr(key)
+        await client.expire(key, _LOGIN_LOCKOUT_WINDOW_SECONDS)
+    except Exception:
+        logger.warning("Recording login failure count failed; ignoring.", exc_info=True)
 
 
 async def _reset_login_failures(email: str) -> None:
-    await get_redis_client().delete(_login_lockout_key(email))
+    try:
+        await get_redis_client().delete(_login_lockout_key(email))
+    except Exception:
+        logger.warning("Resetting login failure count failed; ignoring.", exc_info=True)
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
