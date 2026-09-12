@@ -220,6 +220,11 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 @router.post("/v1/auth/signup", status_code=201)
 async def signup(payload: SignupRequest) -> Response:
+    """Creates the account only — deliberately does not establish a
+    session. Signing up and signing in are two separate actions from the
+    user's point of view (the frontend sends them to the login screen
+    with a "account created" message afterward), so this endpoint
+    shouldn't silently log them in behind that framing."""
     try:
         password_hash = hash_password(payload.password)
     except WeakPasswordError as exc:
@@ -239,21 +244,22 @@ async def signup(payload: SignupRequest) -> Response:
         org_id = (
             await db.execute(select(Organization.id).order_by(Organization.created_at.asc()).limit(1))
         ).scalar_one()
-        plaintext_token = generate_api_key()
         key = ApiKey(
             organization_id=org_id,
             owner_label=payload.display_name or payload.email,
             role=ApiKeyRole.ANALYST,
             email=payload.email,
             password_hash=password_hash,
-            key_hash=hash_api_key(plaintext_token),
+            # A row's key_hash column is required and unique even though
+            # nothing is ever meant to authenticate with this particular
+            # value — login() rotates it to a real session token on the
+            # first actual sign-in, same as every other login already does.
+            key_hash=hash_api_key(generate_api_key()),
         )
         db.add(key)
         await db.commit()
 
-    response = JSONResponse(status_code=201, content={"status": "ok"})
-    _set_session_cookie(response, plaintext_token)
-    return response
+    return JSONResponse(status_code=201, content={"status": "ok"})
 
 
 @router.post("/v1/auth/login")

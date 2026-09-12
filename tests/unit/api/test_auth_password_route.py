@@ -76,7 +76,7 @@ def _mock_redis(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_signup_creates_account_and_sets_session_cookie(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_signup_creates_account_without_logging_in(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_db = _patch_db(monkeypatch, found_row=None, org_id=uuid4())
 
     response = await auth_module.signup(
@@ -89,7 +89,9 @@ async def test_signup_creates_account_and_sets_session_cookie(monkeypatch: pytes
     assert created.email == "new@example.com"
     assert created.role == ApiKeyRole.ANALYST
     assert created.password_hash != "a-real-password"  # never stored in plaintext
-    assert "regradar_session=" in response.headers.get("set-cookie", "")
+    # Signing up creates the account only — it's a separate, explicit
+    # action from signing in, so no session cookie is set here.
+    assert "regradar_session=" not in response.headers.get("set-cookie", "")
 
 
 @pytest.mark.asyncio

@@ -24,28 +24,47 @@ export function Login() {
   const [showPassword, setShowPassword] = useState(false)
   const [displayName, setDisplayName] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
+  const [signupSuccess, setSignupSuccess] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
     setFormError(null)
+    setSignupSuccess(false)
     if (mode === 'signup' && password !== confirmPassword) {
       setFormError("Passwords don't match.")
       return
     }
     setSubmitting(true)
     try {
-      const path = mode === 'login' ? '/v1/auth/login' : '/v1/auth/signup'
-      const body =
-        mode === 'login'
-          ? { email, password }
-          : { email, password, display_name: displayName || undefined }
-      await apiFetch(path, { method: 'POST', body: JSON.stringify(body), skipAuthRedirect: true })
-      // The session cookie is now set — a full reload (not client-side
-      // navigation) is the simplest way to make AuthProvider's GET /v1/me
-      // re-run and pick it up, matching how the Google flow's own
-      // redirect-back-to-frontend already forces a fresh load.
-      window.location.href = '/filings'
+      if (mode === 'login') {
+        await apiFetch('/v1/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ email, password }),
+          skipAuthRedirect: true,
+        })
+        // The session cookie is now set — a full reload (not client-side
+        // navigation) is the simplest way to make AuthProvider's GET
+        // /v1/me re-run and pick it up, matching how the Google flow's
+        // own redirect-back-to-frontend already forces a fresh load.
+        window.location.href = '/filings'
+        return
+      }
+
+      // Signup deliberately doesn't log the new account in — creating an
+      // account and signing in are two separate, explicit actions from
+      // the user's point of view, so land them back on the sign-in form
+      // instead of silently dropping them into the dashboard.
+      await apiFetch('/v1/auth/signup', {
+        method: 'POST',
+        body: JSON.stringify({ email, password, display_name: displayName || undefined }),
+        skipAuthRedirect: true,
+      })
+      setMode('login')
+      setSignupSuccess(true)
+      setPassword('')
+      setConfirmPassword('')
+      setDisplayName('')
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
     } finally {
@@ -79,6 +98,12 @@ export function Login() {
         {oauthErrorCode && (
           <p className="mb-4 rounded-md border border-risk-critical bg-white px-3 py-2 text-sm text-risk-critical">
             {_ERROR_MESSAGES[oauthErrorCode] ?? 'Something went wrong signing in.'}
+          </p>
+        )}
+
+        {signupSuccess && (
+          <p className="mb-4 rounded-md border border-risk-low bg-white px-3 py-2 text-sm text-risk-low-text">
+            Account created — sign in below.
           </p>
         )}
 
@@ -155,6 +180,7 @@ export function Login() {
             onClick={() => {
               setMode(mode === 'login' ? 'signup' : 'login')
               setFormError(null)
+              setSignupSuccess(false)
               setConfirmPassword('')
             }}
           >
