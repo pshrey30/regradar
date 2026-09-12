@@ -7,6 +7,7 @@ import { Button } from './Button'
 
 const _NAV_LINKS: { key: Parameters<typeof canSeeNavItem>[1]; label: string; path?: string }[] = [
   { key: 'filings', label: 'Filings', path: '/filings' },
+  { key: 'activity', label: 'Activity', path: '/activity' },
   { key: 'search', label: 'Ask RegRadar', path: '/search' },
   { key: 'webhooks', label: 'Webhooks', path: '/webhooks' },
   { key: 'api_keys', label: 'API Keys', path: '/api-keys' },

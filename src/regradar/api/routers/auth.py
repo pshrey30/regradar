@@ -38,6 +38,15 @@ legitimate future scope, deliberately not built here: it needs a
 decision this ticket has no basis for (which identity "wins" a role/org
 conflict) that's better made when there's an actual second real use case
 asking for it.
+
+Google SSO is currently disabled (see `_GOOGLE_SSO_ENABLED` below) —
+both routes redirect straight to `?error=google_disabled` without
+touching Google or the database at all. This is a single-line, reversible
+toggle: every real line of SSO logic above (invite-gating through the
+OAuth round-trip, the state-cookie CSRF check, session issuance) is
+untouched and still fully covered by tests, which enable the flag for
+the duration of the test rather than deleting coverage for logic that
+still exists and works.
 """
 
 import logging
@@ -116,6 +125,15 @@ async def _consume_invite(db: AsyncSession, *, code: str, used_by_email: str) ->
         raise _INVALID_INVITE_ERROR
 
 
+# Google sign-in is temporarily disabled, both routes below — not just the
+# frontend button — since a determined caller could still hit these URLs
+# directly with the UI entry point gone. Flip back to True to re-enable;
+# every other line of the real SSO logic (invite-gating, cookie handling,
+# CSRF state check) is untouched and still fully tested, so this is a
+# single-line, reversible toggle, not a partial removal to redo later.
+_GOOGLE_SSO_ENABLED = False
+
+
 def _cookie_kwargs(*, max_age: int) -> dict:
     settings = get_settings()
     return {
@@ -145,6 +163,9 @@ async def google_login(
     whether this is a new row or an existing one."""
     settings = get_settings()
     login_url = f"{settings.frontend_base_url}/login"
+
+    if not _GOOGLE_SSO_ENABLED:
+        return RedirectResponse(url=f"{login_url}?error=google_disabled", status_code=307)
 
     if role is not None and role not in SELF_SELECTABLE_ROLES:
         return RedirectResponse(url=f"{login_url}?error=invalid_role", status_code=307)
@@ -250,6 +271,11 @@ async def google_callback(
         response.delete_cookie(_STATE_COOKIE_NAME, path="/")
         response.delete_cookie(_INVITE_COOKIE_NAME, path="/")
         response.delete_cookie(_ROLE_COOKIE_NAME, path="/")
+
+    if not _GOOGLE_SSO_ENABLED:
+        redirect = RedirectResponse(url=f"{login_url}?error=google_disabled", status_code=307)
+        _clear_oauth_cookies(redirect)
+        return redirect
 
     # CSRF check: the state param Google echoed back must match the value
     # this exact browser was given at /v1/auth/google/login — anyone else

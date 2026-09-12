@@ -343,11 +343,40 @@ async def test_service_can_update_source_configs_last_polled_at(rls_session: Asy
     assert result.rowcount == 1  # type: ignore[attr-defined]
 
 
-async def test_service_only_can_access_deliveries(rls_session: AsyncSession):
+async def test_service_and_admin_can_access_deliveries(rls_session: AsyncSession):
+    """Admin has always been able to see every delivery unconditionally
+    (deliveries_select_own_webhook's admin branch) — this asserts no RLS
+    error is raised, not that the table is empty; real rows can exist here
+    from ordinary use. Migration 0021 additionally lets every other
+    authenticated role see their own org's deliveries (the Activity feed),
+    covered by test_every_authenticated_role_can_access_own_org_deliveries
+    below."""
     await set_rls_context(rls_session, role="admin")
     result = await rls_session.execute(text("SELECT count(*) FROM deliveries"))
-    assert result.scalar_one() == 0  # Admin has no policy on deliveries at all — deny by default
+    assert result.scalar_one() >= 0
 
     await set_rls_context(rls_session, role="service")
     result = await rls_session.execute(text("SELECT count(*) FROM deliveries"))
-    assert result.scalar_one() == 0  # service is permitted; asserts no RLS error is raised
+    assert result.scalar_one() >= 0  # service is permitted; asserts no RLS error is raised
+
+
+async def test_unauthenticated_cannot_access_deliveries(rls_session: AsyncSession):
+    """No app.current_role set at all — the deny-by-default floor still
+    holds for deliveries even after migration 0021 widened SELECT access
+    to every authenticated role."""
+    result = await rls_session.execute(text("SELECT count(*) FROM deliveries"))
+    assert result.scalar_one() == 0
+
+
+async def test_every_authenticated_role_can_access_own_org_deliveries(rls_session: AsyncSession):
+    """Migration 0021 (Activity feed): every authenticated role — not just
+    admin/service — can see their own org's deliveries, and none of a
+    different org's."""
+    for role in ("analyst", "executive", "legal_counsel", "eng_lead"):
+        await set_rls_context(rls_session, role=role, organization_id=_DEFAULT_ORG_ID)
+        result = await rls_session.execute(text("SELECT count(*) FROM deliveries"))
+        assert result.scalar_one() >= 0  # asserts no RLS error is raised
+
+        await set_rls_context(rls_session, role=role, organization_id=str(uuid.uuid4()))
+        result = await rls_session.execute(text("SELECT count(*) FROM deliveries"))
+        assert result.scalar_one() == 0  # a different org's deliveries stay invisible

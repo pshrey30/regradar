@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { AuthProvider } from './auth/AuthContext'
 import { canSeeNavItem, useAuth, type NavItem } from './auth/useAuth'
+import { Activity } from './pages/Activity'
 import { ApiKeys } from './pages/ApiKeys'
 import { FilingDetail } from './pages/FilingDetail'
 import { FilingsList } from './pages/FilingsList'
@@ -79,6 +80,14 @@ function App() {
           element={
             <ProtectedRoute>
               <FilingDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/activity"
+          element={
+            <ProtectedRoute navItem="activity">
+              <Activity />
             </ProtectedRoute>
           }
         />

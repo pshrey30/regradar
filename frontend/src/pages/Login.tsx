@@ -4,13 +4,22 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Input } from '../components/Input'
-import { API_BASE_URL, ApiError, apiFetch } from '../lib/api'
+import { ApiError, apiFetch } from '../lib/api'
 
+// Google sign-in is temporarily removed from the UI (new Google signups
+// are disabled server-side too — see auth.py's google login/callback
+// docstrings) while invite-gated signup is the only account-creation
+// path. Existing Google-linked accounts are untouched by this — the
+// backend still resolves an existing identity on login, this UI simply
+// no longer offers a way to start that flow. state_mismatch/sso_failed
+// are kept here since a stale bookmark to the old Google callback URL
+// could still redirect back with one of these.
 const _ERROR_MESSAGES: Record<string, string> = {
   state_mismatch: 'Your login attempt expired or was invalid. Please try again.',
   sso_failed: 'Google sign-in failed. Please try again.',
   invalid_invite: 'That invite code is invalid or has already been used.',
   invalid_role: 'Not a valid role to sign up as.',
+  google_disabled: 'Google sign-in is temporarily unavailable — please use email and password.',
 }
 
 type Mode = 'login' | 'signup'
@@ -128,42 +137,6 @@ export function Login() {
             Account created — sign in below.
           </p>
         )}
-
-        <a
-          href={
-            mode === 'signup'
-              ? `${API_BASE_URL}/v1/auth/google/login?${new URLSearchParams({ invite_code: inviteCode, role }).toString()}`
-              : `${API_BASE_URL}/v1/auth/google/login`
-          }
-          // A disabled <button> inside an <a> doesn't actually stop the
-          // anchor's own navigation (only the button's own click handling
-          // is suppressed) — the real guard has to be on the anchor
-          // itself; disabled is left on the Button too, purely for the
-          // correct visual/aria state.
-          onClick={(e) => {
-            if (mode === 'signup' && !inviteCode.trim()) e.preventDefault()
-          }}
-        >
-          <Button
-            variant="secondary"
-            size="lg"
-            className="w-full"
-            disabled={mode === 'signup' && !inviteCode.trim()}
-          >
-            {mode === 'signup' ? 'Sign up with Google' : 'Sign in with Google'}
-          </Button>
-        </a>
-        {mode === 'signup' && !inviteCode.trim() && (
-          <p className="mt-1.5 text-center text-xs text-slate-400">
-            Enter your invite code below first.
-          </p>
-        )}
-
-        <div className="my-4 flex items-center gap-3">
-          <div className="h-px flex-1 bg-slate-200" />
-          <span className="text-xs text-slate-400">or</span>
-          <div className="h-px flex-1 bg-slate-200" />
-        </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           {mode === 'signup' && (

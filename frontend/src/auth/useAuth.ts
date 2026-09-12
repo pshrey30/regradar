@@ -17,6 +17,7 @@ export function useAuth() {
 // being hidden plus the backend's eventual 403.
 const _NAV_ITEM_ROLES: Record<string, Role[] | 'all'> = {
   filings: 'all',
+  activity: 'all',
   search: ['admin', 'analyst', 'legal_counsel', 'eng_lead'], // not executive (API-06's own 403)
   webhooks: 'all',
   api_keys: ['admin'],

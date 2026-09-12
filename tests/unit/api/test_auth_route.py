@@ -33,6 +33,16 @@ from regradar.core.sso import GoogleIdentity, SsoError
 from regradar.models.enums import ApiKeyRole
 
 
+@pytest.fixture(autouse=True)
+def _enable_google_sso(monkeypatch: pytest.MonkeyPatch):
+    # Google SSO is disabled by default in the real app right now (see
+    # auth.py's module docstring) — every test below except the two
+    # specifically testing that default explicitly re-enables it, so the
+    # real underlying logic (still fully correct, just not reachable via
+    # the current UI) stays exercised rather than silently going stale.
+    monkeypatch.setattr(auth_module, "_GOOGLE_SSO_ENABLED", True)
+
+
 def _mock_row(*, sso_subject_id: str | None = None) -> MagicMock:
     row = MagicMock()
     row.id = uuid4()
@@ -318,6 +328,32 @@ async def test_find_or_create_reuses_existing_row_for_known_identity(
     mock_db.add.assert_not_called()  # no new row — the existing one's key_hash was rotated instead
     assert existing.key_hash != "old-hash"
     assert isinstance(token, str) and token
+
+
+@pytest.mark.asyncio
+async def test_google_login_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_module, "_GOOGLE_SSO_ENABLED", False)
+
+    with patch.object(auth_module, "get_session_factory") as mock_get_session_factory:
+        response = await auth_module.google_login()
+
+    assert response.status_code == 307
+    assert "error=google_disabled" in response.headers["location"]
+    mock_get_session_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_google_callback_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_module, "_GOOGLE_SSO_ENABLED", False)
+
+    with patch.object(auth_module, "exchange_code_for_identity") as mock_exchange:
+        response = await auth_module.google_callback(
+            code="abc", state="xyz", oauth_state="xyz", oauth_invite_code=None, oauth_role=None
+        )
+
+    assert response.status_code == 307
+    assert "error=google_disabled" in response.headers["location"]
+    mock_exchange.assert_not_called()  # never even attempts to talk to Google
 
 
 @pytest.mark.asyncio

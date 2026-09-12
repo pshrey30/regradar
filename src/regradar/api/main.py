@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from regradar.api.errors import register_error_handlers
 from regradar.api.middleware.request_id import RequestIdFilter, RequestIdMiddleware
+from regradar.api.routers.activity import router as activity_router
 from regradar.api.routers.api_keys import router as api_keys_router
 from regradar.api.routers.auth import router as auth_router
 from regradar.api.routers.config import router as config_router
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(api_keys_router)
     app.include_router(invites_router)
+    app.include_router(activity_router)
 
     @app.get("/health")
     async def health(response: Response) -> dict[str, str]:
