@@ -66,9 +66,19 @@ async def send_slack_alert(
             response = await client.post(webhook_url, json=payload)
     except httpx.RequestError as exc:
         logger.warning("Slack delivery failed (request error): %s", exc)
-        return DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+        return DeliveryResult(
+            status=DeliveryStatus.FAILED,
+            response_code=None,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
 
     if response.status_code == 200 and response.text.strip() == "ok":
         return DeliveryResult(status=DeliveryStatus.SENT, response_code=response.status_code)
     logger.warning("Slack delivery failed: status=%s body=%r", response.status_code, response.text)
-    return DeliveryResult(status=DeliveryStatus.FAILED, response_code=response.status_code)
+    return DeliveryResult(
+        status=DeliveryStatus.FAILED,
+        response_code=response.status_code,
+        # Slack's failure body is one of a small set of short error codes
+        # (e.g. "channel_not_found", "invalid_payload"), not a data echo.
+        error_message=f"HTTP {response.status_code}: {response.text[:200]}",
+    )

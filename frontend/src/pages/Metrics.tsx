@@ -23,6 +23,85 @@ interface MetricsSnapshot {
   avg_cost_per_filing_usd: MetricValue
 }
 
+interface FunnelStatusCount {
+  status: string
+  count: number
+}
+
+interface FunnelResponse {
+  data: FunnelStatusCount[]
+  total: number
+}
+
+// Pipeline order, not alphabetical — so the panel reads left-to-right as
+// "how far did filings get." `complete` and `failed` are the two real
+// end states; everything else is mid-pipeline.
+const _FUNNEL_ORDER = [
+  'ingested',
+  'classifying',
+  'needs_classification',
+  'retrieving',
+  'analyzing',
+  'summarizing',
+  'needs_review',
+  'delivering',
+  'complete',
+  'failed',
+]
+const _FUNNEL_LABELS: Record<string, string> = {
+  ingested: 'Ingested',
+  classifying: 'Classifying',
+  needs_classification: 'Needs classification',
+  retrieving: 'Retrieving',
+  analyzing: 'Analyzing',
+  summarizing: 'Summarizing',
+  needs_review: 'Needs review',
+  delivering: 'Delivering',
+  complete: 'Complete',
+  failed: 'Failed',
+}
+
+function IngestionFunnel() {
+  const query = useQuery({
+    queryKey: ['metrics', 'funnel'],
+    queryFn: () => apiFetch<FunnelResponse>('/v1/metrics/funnel'),
+  })
+
+  if (query.isPending || query.isError || query.data.total === 0) return null
+
+  const byStatus = new Map(query.data.data.map((row) => [row.status, row.count]))
+  const stuckCount = query.data.total - (byStatus.get('complete') ?? 0) - (byStatus.get('failed') ?? 0)
+
+  return (
+    <Card>
+      <p className="mb-1 text-sm font-semibold text-slate-900">Ingestion → delivery funnel</p>
+      <p className="mb-3 text-sm text-slate-500">
+        {query.data.total} filing{query.data.total === 1 ? '' : 's'} total
+        {stuckCount > 0 &&
+          ` — ${stuckCount} not yet complete (see the Filings page's "Pending processing" panel to act on them)`}
+        .
+      </p>
+      <div className="flex flex-wrap gap-3">
+        {_FUNNEL_ORDER.filter((status) => byStatus.has(status)).map((status) => (
+          <div
+            key={status}
+            className={`rounded-md border px-3 py-2 ${
+              status === 'failed'
+                ? 'border-risk-critical'
+                : status === 'complete'
+                  ? 'border-risk-low'
+                  : 'border-slate-200'
+            }`}
+          >
+            <p className="text-lg font-semibold text-slate-900">{byStatus.get(status)}</p>
+            <p className="text-xs text-slate-500">{_FUNNEL_LABELS[status] ?? status}</p>
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
 const TREND_WINDOW_DAYS = 30
 
 const CARD_DEFINITIONS: {
@@ -90,6 +169,8 @@ export function Metrics() {
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-slate-900">Metrics & Cost</h1>
+
+      <IngestionFunnel />
 
       {latestQuery.isPending && (
         <Card>

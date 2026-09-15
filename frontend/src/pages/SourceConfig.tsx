@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
@@ -34,6 +34,25 @@ function domainsFromRows(rows: SourceConfigItem[]): Set<Domain> {
     for (const domain of row.domains) set.add(domain as Domain)
   }
   return set
+}
+
+// Polling here is manual (regradar poll-once — there's no always-on
+// scheduler), so "stale" can't mean "missed its cadence" the way it
+// would for an automated scheduler. This instead flags a source that's
+// gone at least 3x its own configured interval without a poll — a loose
+// enough bar to not nag over a normal gap between manual runs, while
+// still catching "you configured this and then forgot about it
+// entirely."
+const _STALE_MULTIPLIER = 3
+
+function lastPolledLabel(row: SourceConfigItem): { text: string; isStale: boolean } {
+  if (row.last_polled_at === null) {
+    return { text: 'Never polled', isStale: row.is_active }
+  }
+  const lastPolled = new Date(row.last_polled_at)
+  const secondsSince = (Date.now() - lastPolled.getTime()) / 1000
+  const isStale = row.is_active && secondsSince > row.poll_interval_seconds * _STALE_MULTIPLIER
+  return { text: `Last polled ${lastPolled.toLocaleString()}`, isStale }
 }
 
 export function SourceConfig() {
@@ -136,15 +155,30 @@ export function SourceConfig() {
           <Card>
             <p className="mb-3 text-sm font-semibold text-slate-900">Regulators</p>
             <div className="flex flex-col gap-2">
-              {SOURCES.map((source) => (
-                <ToggleRow
-                  key={source}
-                  label={source}
-                  checked={activeSources.has(source)}
-                  onChange={() => toggleSource(source)}
-                />
-              ))}
+              {SOURCES.map((source) => {
+                const row = query.data.find((r) => r.source === source)
+                const polled = row ? lastPolledLabel(row) : null
+                return (
+                  <ToggleRow
+                    key={source}
+                    label={source}
+                    checked={activeSources.has(source)}
+                    onChange={() => toggleSource(source)}
+                    subtext={
+                      polled && (
+                        <span className={polled.isStale ? 'text-risk-medium' : 'text-slate-400'}>
+                          {polled.isStale ? `⚠ ${polled.text} — check it hasn't been forgotten` : polled.text}
+                        </span>
+                      )
+                    }
+                  />
+                )
+              })}
             </div>
+            <p className="mt-3 text-xs text-slate-400">
+              Polling is manual (<code className="rounded bg-slate-100 px-1 py-0.5">regradar poll-once</code>)
+              — this project has no always-on scheduler, so nothing polls these on its own.
+            </p>
           </Card>
 
           <Card>
@@ -192,14 +226,19 @@ function ToggleRow({
   label,
   checked,
   onChange,
+  subtext,
 }: {
   label: string
   checked: boolean
   onChange: () => void
+  subtext?: ReactNode
 }) {
   return (
     <label className="flex cursor-pointer items-center justify-between rounded-md px-3 py-2 hover:bg-slate-50">
-      <span className="text-sm text-slate-700">{label}</span>
+      <span>
+        <span className="block text-sm text-slate-700">{label}</span>
+        {subtext && <span className="block text-xs">{subtext}</span>}
+      </span>
       <input
         type="checkbox"
         checked={checked}

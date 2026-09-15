@@ -23,3 +23,7 @@ class ActivityItem(BaseModel):
     # send, e.g. one still pending or one that failed before ever
     # reaching sent_at.
     at: datetime
+    # Only ever set on a FAILED row (see DeliveryResult's own docstring) —
+    # None for everything else, including rows written before this field
+    # existed.
+    error_message: str | None

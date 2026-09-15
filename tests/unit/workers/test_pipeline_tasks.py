@@ -35,6 +35,7 @@ from regradar.workers.pipeline_tasks import (
     _ProcessFilingTask,
     enqueue_filing_processing,
     process_filing,
+    process_pending_filings,
 )
 
 
@@ -92,6 +93,110 @@ def test_process_filing_persists_classification_on_success(
     assert filing.classification_confidence == 0.9
     assert filing.status == FilingStatus.CLASSIFYING
     mock_db.commit.assert_awaited_once()
+
+
+def test_process_filing_reasserts_rls_role_after_graph_invoke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real bug found live: deliver_node commits per-channel mid-graph,
+    which (set_config(..., true) being transaction-scoped) silently ends
+    the transaction this function's own top-of-function set_rls_context
+    call was scoped to — so the post-graph filing.status write must
+    re-assert the role itself, not rely on the one set before ainvoke()."""
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                    "extraction": None,
+                    "briefs": None,
+                    "delivery_status": None,
+                    "delivery_success": None,
+                }
+            )
+        ),
+    )
+    mock_set_rls_context = AsyncMock()
+    monkeypatch.setattr(pipeline_tasks_module, "set_rls_context", mock_set_rls_context)
+
+    process_filing.run(str(filing_id))
+
+    # Once at the top of the function (before db.get), once more right
+    # after ainvoke() returns and before the status commit.
+    assert mock_set_rls_context.await_count == 2
+    for call in mock_set_rls_context.await_args_list:
+        assert call.kwargs["role"] == "service"
+
+
+def test_process_filing_clears_stale_processing_error_on_new_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A filing that failed once (processing_error set by _mark_filing_failed)
+    and is now reprocessed must not keep showing that stale error once this
+    run actually reaches the post-graph status write, even if this run's own
+    outcome isn't COMPLETE."""
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+    filing.processing_error = "old error from a previous failed attempt"
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                    "extraction": None,
+                    "briefs": None,
+                    "delivery_status": None,
+                    "delivery_success": None,
+                }
+            )
+        ),
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert filing.processing_error is None
 
 
 def test_process_filing_marks_needs_classification_when_triage_fails(
@@ -1074,3 +1179,86 @@ def test_on_failure_with_no_filing_id_does_not_raise() -> None:
     task_instance = _ProcessFilingTask()
     # No args/kwargs at all — should log and return, not raise.
     task_instance.on_failure(RuntimeError("boom"), "task-id-123", (), {}, None)
+
+
+def _patch_pending_query(monkeypatch: pytest.MonkeyPatch, *, filing_ids: list[uuid.UUID]):
+    """process_pending_filings opens its own session just to run the
+    status=ingested query, separate from the per-filing sessions
+    _run_pipeline_for_filing opens — mock only that first query's session."""
+    query_result = MagicMock()
+    query_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=filing_ids)))
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=query_result)
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+    return mock_db
+
+
+async def test_process_pending_filings_returns_empty_list_when_none_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pending_query(monkeypatch, filing_ids=[])
+
+    results = await process_pending_filings()
+
+    assert results == []
+
+
+async def test_process_pending_filings_runs_each_pending_filing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id_1, filing_id_2 = uuid.uuid4(), uuid.uuid4()
+    _patch_pending_query(monkeypatch, filing_ids=[filing_id_1, filing_id_2])
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    processed: list[str] = []
+
+    async def _fake_run_pipeline(filing_id: str) -> None:
+        processed.append(filing_id)
+
+    monkeypatch.setattr(pipeline_tasks_module, "_run_pipeline_for_filing", _fake_run_pipeline)
+
+    results = await process_pending_filings()
+
+    assert processed == [str(filing_id_1), str(filing_id_2)]
+    assert results == [(filing_id_1, True), (filing_id_2, True)]
+
+
+async def test_process_pending_filings_continues_after_one_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One filing's pipeline run raising must not stop the rest of the
+    batch, and the failure must be recorded via _mark_filing_failed."""
+    filing_id_1, filing_id_2 = uuid.uuid4(), uuid.uuid4()
+    _patch_pending_query(monkeypatch, filing_ids=[filing_id_1, filing_id_2])
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    processed: list[str] = []
+
+    async def _fake_run_pipeline(filing_id: str) -> None:
+        processed.append(filing_id)
+        if filing_id == str(filing_id_1):
+            raise RuntimeError("pipeline blew up")
+
+    marked_failed: list[tuple[str, str]] = []
+
+    async def _fake_mark_failed(filing_id: str, error_message: str) -> None:
+        marked_failed.append((filing_id, error_message))
+
+    monkeypatch.setattr(pipeline_tasks_module, "_run_pipeline_for_filing", _fake_run_pipeline)
+    monkeypatch.setattr(pipeline_tasks_module, "_mark_filing_failed", _fake_mark_failed)
+
+    results = await process_pending_filings()
+
+    assert processed == [str(filing_id_1), str(filing_id_2)]
+    assert results == [(filing_id_1, False), (filing_id_2, True)]
+    assert marked_failed == [(str(filing_id_1), "pipeline blew up")]

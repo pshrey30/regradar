@@ -42,7 +42,7 @@ the target for a real-provider run.
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.api.deps import AuthenticatedKey
@@ -51,7 +51,8 @@ from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authentic
 from regradar.core.config import get_settings
 from regradar.models.enums import ApiKeyRole
 from regradar.models.eval_run import EvalRun
-from regradar.schemas.metrics import MetricsResponse, MetricValue
+from regradar.models.filing import Filing
+from regradar.schemas.metrics import FunnelResponse, FunnelStatusCount, MetricsResponse, MetricValue
 
 router = APIRouter()
 
@@ -123,6 +124,15 @@ def _to_response(row: EvalRun) -> MetricsResponse:
     )
 
 
+def _require_admin_or_eng_lead(key: AuthenticatedKey, *, resource: str) -> None:
+    if key.role not in (ApiKeyRole.ADMIN, ApiKeyRole.ENG_LEAD):
+        raise ApiError(
+            status_code=403,
+            code="forbidden",
+            message=f"Only the Admin and Eng Lead roles can view {resource}.",
+        )
+
+
 @router.get("/v1/metrics")
 async def get_metrics(
     since: datetime | None = Query(default=None),
@@ -130,12 +140,7 @@ async def get_metrics(
     key: AuthenticatedKey = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_authenticated_db),
 ) -> MetricsResponse | list[MetricsResponse]:
-    if key.role not in (ApiKeyRole.ADMIN, ApiKeyRole.ENG_LEAD):
-        raise ApiError(
-            status_code=403,
-            code="forbidden",
-            message="Only the Admin and Eng Lead roles can view eval metrics.",
-        )
+    _require_admin_or_eng_lead(key, resource="eval metrics")
 
     # A naive datetime is otherwise silently reinterpreted by asyncpg in the
     # server's local timezone against EvalRun.created_at's TIMESTAMP(timezone=True)
@@ -163,3 +168,23 @@ async def get_metrics(
         stmt = stmt.where(EvalRun.created_at <= until)
     rows = (await db.execute(stmt)).scalars().all()
     return [_to_response(row) for row in rows]
+
+
+@router.get("/v1/metrics/funnel", response_model=FunnelResponse)
+async def get_ingestion_funnel(
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> FunnelResponse:
+    """How many filings sit at each pipeline stage right now — the counts
+    a `regradar process-pending` run (or the Filings page's own "Pending
+    processing" panel) actually acts on. Only every-status-exists rows
+    are returned (no zero-filled rows for a status with no filings), so
+    the frontend fills any gaps itself.
+    """
+    _require_admin_or_eng_lead(key, resource="the ingestion funnel")
+
+    stmt = select(Filing.status, func.count()).group_by(Filing.status)
+    rows = (await db.execute(stmt)).all()
+
+    counts = [FunnelStatusCount(status=status, count=count) for status, count in rows]
+    return FunnelResponse(data=counts, total=sum(c.count for c in counts))

@@ -12,6 +12,7 @@ import uuid
 
 from celery import Task
 from celery.utils.log import get_task_logger
+from sqlalchemy import select
 
 from regradar.agents.graph import build_graph
 from regradar.agents.state import PipelineState
@@ -64,6 +65,24 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
         state = PipelineState(filing_id=filing.id, raw_text=raw_text, chunks=chunks or None)
         result = await build_graph().ainvoke(state, config={"configurable": {"db": db}})
 
+        # Real bug found live (first time this pipeline ever ran against a
+        # populated deliveries table with an actual channel configured):
+        # deliver_node's own _record_delivery commits per-channel (see its
+        # docstring) — set_config(..., true) is transaction-scoped, so each
+        # of those commits ends the transaction this function's own
+        # set_rls_context call above was scoped to, silently reverting
+        # app.current_role. Every write below this point must re-assert it
+        # first, or its RLS-gated UPDATE/INSERT is silently filtered to
+        # zero rows (raises StaleDataError for the UPDATE case) instead of
+        # actually being denied loudly.
+        await set_rls_context(db, role="service")
+
+        # A prior failed attempt's error must not linger once a new run
+        # actually reaches this point — reprocessing (e.g. via
+        # process-pending or the Filings page's "Process now") always
+        # supersedes whatever _mark_filing_failed recorded last time.
+        filing.processing_error = None
+
         if result["domain"] is None:
             filing.status = FilingStatus.NEEDS_CLASSIFICATION
         else:
@@ -93,6 +112,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             similar_filing_ids = list(
                 dict.fromkeys(str(chunk.filing_id) for chunk in retrieved_chunks)
             )
+            await set_rls_context(db, role="service")  # see the comment above — re-assert post-commit
             db.add(
                 Extraction(
                     filing_id=filing.id,
@@ -115,6 +135,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             # ExtractionResult in AGENT-07 — attribute access only.
             briefs_result = result["briefs"]
             try:
+                await set_rls_context(db, role="service")  # see the comment above — re-assert post-commit
                 db.add(
                     Brief(
                         filing_id=filing.id,
@@ -135,6 +156,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
 
         if raw_text:
             try:
+                await set_rls_context(db, role="service")  # see the comment above — re-assert post-commit
                 await embed_chunks(filing.id, chunks, db)
             except Exception as exc:  # noqa: BLE001 — a transient embedding failure must not
                 # re-trigger the whole task (with autoretry_for=(Exception,)) and re-run
@@ -185,3 +207,41 @@ def enqueue_filing_processing(filing_id: uuid.UUID) -> None:
     of ingestion/ entirely.
     """
     process_filing.delay(str(filing_id))
+
+
+async def process_pending_filings() -> list[tuple[uuid.UUID, bool]]:
+    """Run the pipeline for every filing still at status=ingested, one at a
+    time, synchronously — no Celery worker or broker required.
+
+    This is the on-demand, cost-gated counterpart to `poll-once`:
+    ingestion is free (metadata only), this is what actually spends LLM
+    tokens (classification, extraction, summarization) and triggers
+    delivery — so it is a deliberate, separate command rather than
+    something ingestion ever triggers automatically. Ingestion code never
+    calls this or `enqueue_filing_processing` itself, by design: the two
+    stages (fetch vs. spend-and-deliver) are decided independently.
+
+    Returns a list of (filing_id, succeeded) pairs. One filing's failure
+    is caught and marked (via _mark_filing_failed) rather than stopping
+    the batch — this bypasses process_filing's Celery retry machinery
+    entirely, so a genuine transient failure here is not retried; re-run
+    `process-pending` to pick it back up (it's still at status=ingested
+    only if _run_pipeline_for_filing raised before committing any status
+    change, otherwise it's `failed` and won't be picked up again).
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        await set_rls_context(db, role="service")
+        result = await db.execute(select(Filing.id).where(Filing.status == FilingStatus.INGESTED))
+        pending_ids = list(result.scalars().all())
+
+    results: list[tuple[uuid.UUID, bool]] = []
+    for filing_id in pending_ids:
+        try:
+            await _run_pipeline_for_filing(str(filing_id))
+            results.append((filing_id, True))
+        except Exception as exc:  # noqa: BLE001 — one filing's failure must not stop the batch
+            logger.error("process-pending: filing %s failed: %s", filing_id, exc)
+            await _mark_filing_failed(str(filing_id), str(exc))
+            results.append((filing_id, False))
+    return results

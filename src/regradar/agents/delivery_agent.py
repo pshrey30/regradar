@@ -160,6 +160,7 @@ async def _record_delivery(
             recipient=recipient,
             status=result.status,
             response_code=result.response_code,
+            error_message=result.error_message,
             attempt_count=1,
             is_fallback=is_fallback,
             sent_at=datetime.now(UTC) if result.status == DeliveryStatus.SENT else None,
@@ -212,7 +213,11 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
             except Exception as exc:  # noqa: BLE001 — one channel's crash must not block the others,
                 # and every attempt still gets a Delivery row per this ticket's acceptance criteria
                 logger.warning("Slack delivery raised for filing %s: %s", state.filing_id, exc)
-                result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+                result = DeliveryResult(
+                    status=DeliveryStatus.FAILED,
+                    response_code=None,
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
             await _record_delivery(
                 db, filing.id, filing.organization_id, DeliveryChannel.SLACK, "slack:default", result
             )
@@ -252,7 +257,11 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
                 )
             except Exception as exc:  # noqa: BLE001 — see Slack's comment above
                 logger.warning("Fallback email delivery raised for filing %s: %s", state.filing_id, exc)
-                result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+                result = DeliveryResult(
+                    status=DeliveryStatus.FAILED,
+                    response_code=None,
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
             await _record_delivery(
                 db,
                 filing.id,
@@ -282,7 +291,11 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
                 )
             except Exception as exc:  # noqa: BLE001 — see Slack's comment above
                 logger.warning("Email delivery raised for filing %s: %s", state.filing_id, exc)
-                result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+                result = DeliveryResult(
+                    status=DeliveryStatus.FAILED,
+                    response_code=None,
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
             await _record_delivery(
                 db, filing.id, filing.organization_id, DeliveryChannel.EMAIL, recipient, result
             )
@@ -325,10 +338,18 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
                 state.filing_id,
                 exc,
             )
-            result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+            result = DeliveryResult(
+                status=DeliveryStatus.FAILED,
+                response_code=None,
+                error_message=f"URL validation failed: {exc}",
+            )
         except Exception as exc:  # noqa: BLE001 — see Slack's comment above
             logger.warning("Webhook delivery raised for filing %s: %s", state.filing_id, exc)
-            result = DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+            result = DeliveryResult(
+                status=DeliveryStatus.FAILED,
+                response_code=None,
+                error_message=f"{type(exc).__name__}: {exc}",
+            )
         await _record_delivery(
             db,
             filing.id,

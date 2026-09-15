@@ -52,6 +52,7 @@ async def list_activity(
             status=delivery.status,
             is_fallback=delivery.is_fallback,
             at=at_value,
+            error_message=delivery.error_message,
         )
         for delivery, entity_name, filing_type, domain, risk_level, at_value in rows
     ]

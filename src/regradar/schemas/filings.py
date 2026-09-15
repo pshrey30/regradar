@@ -25,6 +25,29 @@ class FilingListResponse(BaseModel):
     total: int
 
 
+class PendingFilingItem(BaseModel):
+    """A filing that hasn't reached `complete` yet — no Brief row exists,
+    so this deliberately carries none of FilingListItem's brief-derived
+    fields."""
+
+    id: uuid.UUID
+    entity_name: str
+    filing_type: str
+    source: str
+    status: FilingStatus
+    ingested_at: datetime
+    processing_error: str | None
+
+
+class PendingFilingsResponse(BaseModel):
+    data: list[PendingFilingItem]
+
+
+class ProcessFilingResponse(BaseModel):
+    id: uuid.UUID
+    status: FilingStatus
+
+
 class SimilarFiling(BaseModel):
     id: uuid.UUID
     entity_name: str

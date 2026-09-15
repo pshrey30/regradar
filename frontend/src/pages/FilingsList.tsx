@@ -1,6 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
+import { useAuth } from '../auth/useAuth'
 import { Badge, type DomainValue, type RiskLevel } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
@@ -94,7 +95,122 @@ function DateField({
   )
 }
 
+interface PendingFilingItem {
+  id: string
+  entity_name: string
+  filing_type: string
+  source: string
+  status: string
+  ingested_at: string
+  processing_error: string | null
+}
+
+const _STATUS_LABELS: Record<string, string> = {
+  ingested: 'Ingested',
+  classifying: 'Classifying',
+  needs_classification: 'Needs classification',
+  needs_review: 'Needs review',
+  retrieving: 'Retrieving',
+  analyzing: 'Analyzing',
+  summarizing: 'Summarizing',
+  delivering: 'Delivering',
+  failed: 'Failed',
+}
+
+function PendingStatusBadge({ status }: { status: string }) {
+  const isFailed = status === 'failed'
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
+        isFailed
+          ? 'border-risk-critical text-risk-critical'
+          : 'border-risk-medium text-risk-medium'
+      }`}
+    >
+      {_STATUS_LABELS[status] ?? status}
+    </span>
+  )
+}
+
+// GET /v1/filings only ever returns status=complete filings (it inner-joins
+// briefs, which don't exist until the pipeline finishes) — so a filing
+// stuck earlier in the pipeline is invisible there by construction. This
+// panel is the only place in the UI that surfaces it, via the separate
+// admin-only /v1/filings/pending endpoint. Ingestion never auto-triggers
+// processing (a deliberate, cost-gated choice — see the CLI's
+// process-pending command); this is where an admin acts on that manually.
+function PendingFilingsPanel() {
+  const queryClient = useQueryClient()
+  const query = useQuery({
+    queryKey: ['filings-pending'],
+    queryFn: () => apiFetch<{ data: PendingFilingItem[] }>('/v1/filings/pending'),
+  })
+
+  const processMutation = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ id: string; status: string }>(`/v1/filings/${id}/process`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['filings-pending'] })
+      queryClient.invalidateQueries({ queryKey: ['filings'] })
+    },
+  })
+
+  if (query.isPending || query.isError || (query.data?.data.length ?? 0) === 0) {
+    return null
+  }
+
+  return (
+    <Card>
+      <div className="flex flex-col gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">
+            Pending processing ({query.data.data.length})
+          </h2>
+          <p className="text-sm text-slate-500">
+            Ingested but not yet summarized or delivered — run the pipeline manually below, or
+            with <code className="rounded bg-slate-100 px-1 py-0.5">regradar process-pending</code>.
+          </p>
+        </div>
+        <div className="flex flex-col divide-y divide-slate-200">
+          {query.data.data.map((filing) => {
+            const isProcessingThis =
+              processMutation.isPending && processMutation.variables === filing.id
+            return (
+              <div key={filing.id} className="flex items-center justify-between gap-3 py-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium text-slate-900">
+                      {filing.entity_name}
+                    </span>
+                    <span className="text-sm text-slate-500">{filing.filing_type}</span>
+                    <PendingStatusBadge status={filing.status} />
+                  </div>
+                  {filing.status === 'failed' && filing.processing_error && (
+                    <p className="mt-0.5 truncate text-xs text-risk-critical" title={filing.processing_error}>
+                      {filing.processing_error}
+                    </p>
+                  )}
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={isProcessingThis}
+                  disabled={processMutation.isPending}
+                  onClick={() => processMutation.mutate(filing.id)}
+                >
+                  Process now
+                </Button>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 export function FilingsList() {
+  const { role } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
 
@@ -134,6 +250,8 @@ export function FilingsList() {
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-slate-900">Filings</h1>
+
+      {role === 'admin' && <PendingFilingsPanel />}
 
       <Card>
         <div className="flex flex-wrap items-end gap-3">

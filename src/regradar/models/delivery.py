@@ -42,6 +42,10 @@ class Delivery(Base):
         default=DeliveryStatus.PENDING,
     )
     response_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A short, human-readable failure reason — see DeliveryResult's own
+    # docstring. NULL for SENT rows and for rows written before this
+    # column existed.
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # DELIV-04: distinguishes an email sent because Slack failed/wasn't
     # configured for a Critical/High filing from a normally-configured

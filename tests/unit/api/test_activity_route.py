@@ -59,6 +59,7 @@ def _delivery_row(
     status: DeliveryStatus = DeliveryStatus.SENT,
     sent_at=None,
     is_fallback: bool = False,
+    error_message: str | None = None,
 ):
     row = MagicMock()
     row.id = uuid.uuid4()
@@ -67,6 +68,7 @@ def _delivery_row(
     row.status = status
     row.is_fallback = is_fallback
     row.sent_at = sent_at
+    row.error_message = error_message
     row.created_at = datetime(2026, 1, 1, tzinfo=UTC)
     return row
 
@@ -123,6 +125,43 @@ def test_activity_falls_back_to_created_at_when_never_sent(monkeypatch: pytest.M
     body = response.json()[0]
     assert body["status"] == "failed"
     assert body["at"].startswith("2026-01-03")
+
+
+def test_activity_includes_error_message_on_failed_delivery(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
+    created_at = datetime(2026, 1, 4, tzinfo=UTC)
+    delivery = _delivery_row(
+        status=DeliveryStatus.FAILED, sent_at=None, error_message="HTTP 500"
+    )
+    delivery.created_at = created_at
+    _mock_activity_db(
+        monkeypatch,
+        rows=[(delivery, "Gamma Corp", "8-K", FilingDomain.OTHER, RiskLevel.MEDIUM, created_at)],
+    )
+
+    response = TestClient(create_app()).get(
+        "/v1/activity", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["error_message"] == "HTTP 500"
+
+
+def test_activity_error_message_is_null_on_sent_delivery(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
+    sent_at = datetime(2026, 1, 5, tzinfo=UTC)
+    delivery = _delivery_row(sent_at=sent_at)
+    _mock_activity_db(
+        monkeypatch,
+        rows=[(delivery, "Acme Corp", "10-K", FilingDomain.FINANCIAL, RiskLevel.LOW, sent_at)],
+    )
+
+    response = TestClient(create_app()).get(
+        "/v1/activity", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["error_message"] is None
 
 
 def test_activity_rejects_limit_out_of_bounds(monkeypatch: pytest.MonkeyPatch):

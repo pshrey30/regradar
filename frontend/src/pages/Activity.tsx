@@ -19,6 +19,7 @@ interface ActivityItem {
   status: Status
   is_fallback: boolean
   at: string
+  error_message: string | null
 }
 
 const CHANNEL_LABELS: Record<Channel, string> = {
@@ -27,7 +28,7 @@ const CHANNEL_LABELS: Record<Channel, string> = {
   webhook: 'Webhook',
 }
 
-function StatusDot({ status }: { status: Status }) {
+function StatusDot({ status, errorMessage }: { status: Status; errorMessage: string | null }) {
   const color =
     status === 'sent'
       ? 'bg-risk-low'
@@ -38,9 +39,29 @@ function StatusDot({ status }: { status: Status }) {
   const label = status === 'sent' ? 'Sent' : status === 'failed' ? 'Failed' : 'Retrying'
 
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+    <span
+      className="inline-flex items-center gap-1.5 text-xs text-slate-500"
+      // Native title tooltip — lightweight, no extra UI chrome, shows the
+      // actual delivery-client failure reason (e.g. "HTTP 500",
+      // "TimeoutException: ...") on hover for a Failed row.
+      title={status === 'failed' && errorMessage ? errorMessage : undefined}
+    >
       <span className={`h-2 w-2 rounded-full ${color}`} />
       {label}
+      {status === 'failed' && errorMessage && (
+        <svg
+          className="h-3.5 w-3.5 text-slate-400"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            fillRule="evenodd"
+            d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+            clipRule="evenodd"
+          />
+        </svg>
+      )}
     </span>
   )
 }
@@ -106,7 +127,7 @@ export function Activity() {
                     {item.is_fallback && ' (fallback)'} · {new Date(item.at).toLocaleString()}
                   </p>
                 </div>
-                <StatusDot status={item.status} />
+                <StatusDot status={item.status} errorMessage={item.error_message} />
               </div>
             </Card>
           ))}

@@ -141,9 +141,17 @@ async def send_webhook_alert(url: str, hmac_secret: str, payload: dict) -> Deliv
             response = await client.post(url, content=body, headers=headers)
     except httpx.RequestError as exc:
         logger.warning("Webhook delivery failed (request error) for %s: %s", url, exc)
-        return DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+        return DeliveryResult(
+            status=DeliveryStatus.FAILED,
+            response_code=None,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
 
     if 200 <= response.status_code < 300:
         return DeliveryResult(status=DeliveryStatus.SENT, response_code=response.status_code)
     logger.warning("Webhook delivery failed for %s: status=%s", url, response.status_code)
-    return DeliveryResult(status=DeliveryStatus.FAILED, response_code=response.status_code)
+    return DeliveryResult(
+        status=DeliveryStatus.FAILED,
+        response_code=response.status_code,
+        error_message=f"HTTP {response.status_code}",
+    )

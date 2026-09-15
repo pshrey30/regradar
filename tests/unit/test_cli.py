@@ -1,4 +1,4 @@
-"""Tests for the create-api-key and run-eval CLI commands."""
+"""Tests for the create-api-key, run-eval, and process-pending CLI commands."""
 
 import uuid
 from dataclasses import dataclass
@@ -119,3 +119,28 @@ def test_run_eval_exits_zero_when_run_passed(monkeypatch: pytest.MonkeyPatch):
     )
 
     cli_module._run_eval(run_type="manual")  # must not raise SystemExit
+
+
+def test_process_pending_prints_no_pending_message_when_empty(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "regradar.workers.pipeline_tasks.process_pending_filings", AsyncMock(return_value=[])
+    )
+
+    cli_module._process_pending()
+
+    captured = capsys.readouterr()
+    assert "No pending filings" in captured.out
+
+
+def test_process_pending_prints_a_line_per_filing(monkeypatch, capsys):
+    filing_id_1, filing_id_2 = uuid.uuid4(), uuid.uuid4()
+    monkeypatch.setattr(
+        "regradar.workers.pipeline_tasks.process_pending_filings",
+        AsyncMock(return_value=[(filing_id_1, True), (filing_id_2, False)]),
+    )
+
+    cli_module._process_pending()
+
+    captured = capsys.readouterr()
+    assert f"{filing_id_1}: done" in captured.out
+    assert f"{filing_id_2}: FAILED" in captured.out

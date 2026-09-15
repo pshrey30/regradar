@@ -25,6 +25,19 @@ def _poll_once() -> None:
             print(f"{source_name}: {count} new filing(s)")
 
 
+def _process_pending() -> None:
+    """Run the agent pipeline for every filing still at status=ingested, then exit."""
+    from regradar.workers.pipeline_tasks import process_pending_filings
+
+    results = asyncio.run(process_pending_filings())
+    if not results:
+        print("No pending filings — nothing to process.")
+        return
+
+    for filing_id, succeeded in results:
+        print(f"{filing_id}: {'done' if succeeded else 'FAILED (see logs)'}")
+
+
 def _create_api_key(
     *, owner_label: str, role: str, rate_limit_per_minute: int | None = None
 ) -> None:
@@ -130,6 +143,12 @@ def main() -> None:
     subparsers.add_parser(
         "poll-once", help="Run a single ingestion cycle across all active sources, then exit."
     )
+    subparsers.add_parser(
+        "process-pending",
+        help="Run the agent pipeline (classify/extract/summarize/deliver) for every "
+        "filing still at status=ingested, then exit. Separate from poll-once so LLM "
+        "spend only happens when you explicitly ask for it.",
+    )
     create_key_parser = subparsers.add_parser(
         "create-api-key", help="Mint a new API key and print it once."
     )
@@ -159,6 +178,8 @@ def main() -> None:
 
     if args.command == "poll-once":
         _poll_once()
+    elif args.command == "process-pending":
+        _process_pending()
     elif args.command == "create-api-key":
         _create_api_key(
             owner_label=args.owner_label,

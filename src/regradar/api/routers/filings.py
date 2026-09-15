@@ -36,7 +36,10 @@ from regradar.rag.retriever import retrieve_similar_filings
 from regradar.schemas.filings import (
     FilingListItem,
     FilingListResponse,
+    PendingFilingItem,
+    PendingFilingsResponse,
     PersonaBriefResponse,
+    ProcessFilingResponse,
     SearchRequest,
     SearchResponse,
     SearchSource,
@@ -155,6 +158,88 @@ async def list_filings(
     ]
 
     return FilingListResponse(data=data, page=page, page_size=page_size, total=total)
+
+
+_ADMIN_ONLY_PROCESSING_ERROR = ApiError(
+    status_code=403,
+    code="forbidden",
+    message="Only the Admin role can view or trigger filing processing.",
+)
+
+
+def _require_admin_for_processing(key: AuthenticatedKey) -> None:
+    if key.role != ApiKeyRole.ADMIN:
+        raise _ADMIN_ONLY_PROCESSING_ERROR
+
+
+@router.get("/v1/filings/pending", response_model=PendingFilingsResponse)
+async def list_pending_filings(
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> PendingFilingsResponse:
+    """Admin-only: every filing not yet `complete` — i.e. ingested but the
+    agent pipeline (classify/extract/summarize/deliver) hasn't finished
+    for it, whether because it's never been run (see `process-pending`'s
+    own docstring: ingestion never triggers this automatically) or because
+    a run failed. Registered before `/v1/filings/{filing_id}` so "pending"
+    is never captured as a filing_id path param.
+    """
+    _require_admin_for_processing(key)
+
+    stmt = (
+        select(Filing)
+        .where(Filing.status != FilingStatus.COMPLETE)
+        .order_by(Filing.ingested_at.desc())
+        .limit(100)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    return PendingFilingsResponse(
+        data=[
+            PendingFilingItem(
+                id=filing.id,
+                entity_name=filing.entity_name,
+                filing_type=filing.filing_type,
+                source=filing.source.value,
+                status=filing.status,
+                ingested_at=filing.ingested_at,
+                processing_error=filing.processing_error,
+            )
+            for filing in rows
+        ]
+    )
+
+
+@router.post("/v1/filings/{filing_id}/process", response_model=ProcessFilingResponse)
+async def process_pending_filing(
+    filing_id: uuid.UUID,
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> ProcessFilingResponse:
+    """Admin-only: run the agent pipeline for one filing now, synchronously,
+    in this request — the same on-demand, cost-gated approach as the CLI's
+    `process-pending` (see that command's docstring), so triggering this
+    from the UI has no hidden requirement on a Celery worker/broker
+    actually running. A filing already `complete` is re-run in place
+    (harmless — the pipeline's own idempotency guards, e.g. deliver_node's
+    already-sent check, still apply); this endpoint doesn't special-case it.
+    """
+    _require_admin_for_processing(key)
+
+    filing = await db.get(Filing, filing_id)
+    if filing is None:
+        raise ApiError(status_code=404, code="filing_not_found", message="No filing exists with this ID.")
+
+    from regradar.workers.pipeline_tasks import _mark_filing_failed, _run_pipeline_for_filing
+
+    try:
+        await _run_pipeline_for_filing(str(filing_id))
+    except Exception as exc:
+        await _mark_filing_failed(str(filing_id), str(exc))
+        logger.exception("Manual processing failed for filing %s", filing_id)
+
+    await db.refresh(filing)
+    return ProcessFilingResponse(id=filing.id, status=filing.status)
 
 
 @router.get("/v1/filings/{filing_id}")

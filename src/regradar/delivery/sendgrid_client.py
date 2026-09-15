@@ -65,7 +65,9 @@ async def _send_html_email(*, recipient: str, subject: str, html_body: str) -> D
     settings = get_settings()
     if not settings.sendgrid_api_key:
         logger.warning("SendGrid not configured; skipping email delivery")
-        return DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+        return DeliveryResult(
+            status=DeliveryStatus.FAILED, response_code=None, error_message="SendGrid not configured"
+        )
 
     payload = {
         "personalizations": [{"to": [{"email": recipient}]}],
@@ -80,12 +82,23 @@ async def _send_html_email(*, recipient: str, subject: str, html_body: str) -> D
             response = await client.post(SENDGRID_MAIL_SEND_URL, json=payload, headers=headers)
     except httpx.RequestError as exc:
         logger.warning("SendGrid delivery failed (request error): %s", exc)
-        return DeliveryResult(status=DeliveryStatus.FAILED, response_code=None)
+        return DeliveryResult(
+            status=DeliveryStatus.FAILED,
+            response_code=None,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
 
     if response.status_code == 202:
         return DeliveryResult(status=DeliveryStatus.SENT, response_code=response.status_code)
     logger.warning("SendGrid delivery failed: status=%s body=%r", response.status_code, response.text)
-    return DeliveryResult(status=DeliveryStatus.FAILED, response_code=response.status_code)
+    return DeliveryResult(
+        status=DeliveryStatus.FAILED,
+        response_code=response.status_code,
+        # SendGrid's error body is small, structured JSON (not a sensitive
+        # payload echo) — bounded slice as a safety net against an
+        # unexpectedly large body, not because it's normally huge.
+        error_message=f"HTTP {response.status_code}: {response.text[:200]}",
+    )
 
 
 async def send_email_alert(

@@ -11,7 +11,7 @@ import regradar.core.db as db_module
 from regradar.api import deps as deps_module
 from regradar.api.main import create_app
 from regradar.api.middleware import rate_limit as rate_limit_module
-from regradar.models.enums import ApiKeyRole, EvalRunType
+from regradar.models.enums import ApiKeyRole, EvalRunType, FilingStatus
 
 
 def _authenticated_key_row(role: ApiKeyRole):
@@ -201,3 +201,57 @@ def test_metrics_with_date_range_returns_empty_list_not_error(
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def _mock_funnel_db(monkeypatch: pytest.MonkeyPatch, *, rows: list[tuple]):
+    mock_db = AsyncMock()
+    result = MagicMock()
+    result.all = MagicMock(return_value=rows)
+    mock_db.execute = AsyncMock(return_value=result)
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(db_module, "get_session_factory", lambda: mock_session_factory)
+    return mock_db
+
+
+def test_funnel_returns_403_for_non_admin_eng_lead_roles(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
+    _mock_funnel_db(monkeypatch, rows=[])
+
+    response = TestClient(create_app()).get(
+        "/v1/metrics/funnel", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_funnel_returns_counts_per_status(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    _mock_funnel_db(
+        monkeypatch,
+        rows=[(FilingStatus.INGESTED, 20), (FilingStatus.COMPLETE, 9), (FilingStatus.DELIVERING, 1)],
+    )
+
+    response = TestClient(create_app()).get(
+        "/v1/metrics/funnel", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 30
+    assert {"status": "ingested", "count": 20} in body["data"]
+    assert {"status": "complete", "count": 9} in body["data"]
+
+
+def test_funnel_returns_empty_when_no_filings(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ENG_LEAD)
+    _mock_funnel_db(monkeypatch, rows=[])
+
+    response = TestClient(create_app()).get(
+        "/v1/metrics/funnel", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"data": [], "total": 0}
