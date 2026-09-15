@@ -23,7 +23,13 @@ interface WebhookCreateResponse extends WebhookItem {
   hmac_secret: string
 }
 
-const DOMAIN_OPTIONS: DomainValue[] = ['financial', 'clinical', 'environmental', 'other']
+const DOMAIN_OPTIONS: DomainValue[] = [
+  'financial',
+  'clinical',
+  'environmental',
+  'engineering',
+  'other',
+]
 const RISK_OPTIONS: RiskLevel[] = ['low', 'medium', 'high', 'critical']
 
 function DeliveryHealth({ webhook }: { webhook: WebhookItem }) {

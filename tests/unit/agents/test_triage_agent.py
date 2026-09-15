@@ -69,6 +69,7 @@ def test_classify_filing_sends_expected_candidate_labels_and_url() -> None:
             "financial",
             "clinical",
             "environmental",
+            "engineering",
             "other",
         ]
 

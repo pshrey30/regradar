@@ -26,7 +26,7 @@ from regradar.models.enums import FilingDomain, RiskLevel
 logger = logging.getLogger(__name__)
 
 HF_TRIAGE_MODEL_URL = "https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli"
-CANDIDATE_LABELS = ["financial", "clinical", "environmental", "other"]
+CANDIDATE_LABELS = ["financial", "clinical", "environmental", "engineering", "other"]
 
 CRITICAL_KEYWORDS = [
     "material weakness",
@@ -60,13 +60,13 @@ SEVERITY_ORDER = {
 # Bumped whenever SPOT_CHECK_SYSTEM_PROMPT/SPOT_CHECK_USER_PROMPT_TEMPLATE change
 # meaningfully — EVAL-05's LangSmith Prompt Hub push tags each pushed version
 # with this identifier.
-PROMPT_VERSION = "triage-spot-check-v1"
+PROMPT_VERSION = "triage-spot-check-v2"
 
 SPOT_CHECK_SYSTEM_PROMPT = "You are a regulatory filing classifier. Respond with strict JSON only."
 SPOT_CHECK_USER_PROMPT_TEMPLATE = (
-    'Classify this filing into one of ["financial", "clinical", "environmental", "other"], '
-    'and independently assign a risk_level ("low", "medium", "high", "critical") with a brief '
-    'reasoning. Text: "{text}" '
+    'Classify this filing into one of ["financial", "clinical", "environmental", "engineering", '
+    '"other"], and independently assign a risk_level ("low", "medium", "high", "critical") with a '
+    'brief reasoning. Text: "{text}" '
     'Respond as JSON: {{"domain": ..., "risk_level": ..., "reasoning": ...}}'
 )
 

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
+import { allowedDomainsForRole } from '../auth/domainScope'
 import { useAuth } from '../auth/useAuth'
 import { Badge, type DomainValue, type RiskLevel } from '../components/Badge'
 import { Button } from '../components/Button'
@@ -25,7 +26,13 @@ interface FilingListResponse {
   total: number
 }
 
-const DOMAIN_OPTIONS: DomainValue[] = ['financial', 'clinical', 'environmental', 'other']
+const ALL_DOMAIN_OPTIONS: DomainValue[] = [
+  'financial',
+  'clinical',
+  'environmental',
+  'engineering',
+  'other',
+]
 const RISK_OPTIONS: RiskLevel[] = ['low', 'medium', 'high', 'critical']
 const SOURCE_OPTIONS = ['SEC', 'FDA', 'FINRA'] as const
 
@@ -211,6 +218,7 @@ function PendingFilingsPanel() {
 
 export function FilingsList() {
   const { role } = useAuth()
+  const allowedDomains = allowedDomainsForRole(role)
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
 
@@ -251,16 +259,28 @@ export function FilingsList() {
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-slate-900">Filings</h1>
 
+      {allowedDomains && (
+        <p className="-mt-2 text-sm text-slate-500">
+          Showing {allowedDomains.map((d) => d[0].toUpperCase() + d.slice(1)).join(' and ')}{' '}
+          filings only — scoped to your role.
+        </p>
+      )}
+
       {role === 'admin' && <PendingFilingsPanel />}
 
       <Card>
         <div className="flex flex-wrap items-end gap-3">
-          <FilterSelect
-            label="Domain"
-            value={filters.domain}
-            options={DOMAIN_OPTIONS}
-            onChange={(v) => updateFilter('domain', v)}
-          />
+          {/* A role locked to a single domain has nothing to filter — the
+              banner above already says what it's scoped to, so the
+              dropdown would just be one option offering no real choice. */}
+          {(allowedDomains === null || allowedDomains.length > 1) && (
+            <FilterSelect
+              label="Domain"
+              value={filters.domain}
+              options={allowedDomains ?? ALL_DOMAIN_OPTIONS}
+              onChange={(v) => updateFilter('domain', v)}
+            />
+          )}
           <FilterSelect
             label="Risk"
             value={filters.risk}

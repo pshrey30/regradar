@@ -25,6 +25,7 @@ from regradar.api.deps import AuthenticatedKey, get_current_key
 from regradar.api.errors import ApiError
 from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.core.db import get_session_factory, set_rls_context
+from regradar.core.domain_scope import allowed_domains_for_role, is_domain_visible_to_role
 from regradar.core.pg_listen import listen
 from regradar.core.s3_client import generate_presigned_pdf_url
 from regradar.models.brief import Brief
@@ -81,7 +82,16 @@ def _build_filters(
 
     filters: list = [Filing.status == FilingStatus.COMPLETE]
 
-    if domain is not None:
+    # Role-scoped dashboard: intersect the requested domain (or "any") with
+    # the role's allowed set, same pattern as Executive's risk-level
+    # narrowing below — silently narrowed, never a 403. An empty
+    # intersection (e.g. an Analyst explicitly requesting ?domain=clinical)
+    # produces Filing.domain.in_(set()), an always-false clause.
+    allowed_domains = allowed_domains_for_role(role)
+    if allowed_domains is not None:
+        effective_domains = {domain} & allowed_domains if domain is not None else allowed_domains
+        filters.append(Filing.domain.in_(effective_domains))
+    elif domain is not None:
         filters.append(Filing.domain == domain)
 
     if source is not None:
@@ -256,7 +266,10 @@ async def get_filing(
     doesn't exist" the way a dict naturally can.
     """
     filing = await db.get(Filing, filing_id)
-    if filing is None:
+    if filing is None or not is_domain_visible_to_role(filing.domain, key.role):
+        # A filing outside the caller's role-scoped domain(s) 404s exactly
+        # like a nonexistent one — a deep link (or a guessed UUID) must
+        # never confirm that a different-domain filing exists.
         raise ApiError(status_code=404, code="filing_not_found", message="No filing exists with this ID.")
 
     brief = (
@@ -342,6 +355,17 @@ async def search_filings(
         await db.execute(select(Filing).where(Filing.id.in_(filing_ids)))
     ).scalars().all()
     entity_names = {filing.id: filing.entity_name for filing in filing_rows}
+    domains = {filing.id: filing.domain for filing in filing_rows}
+
+    # Role-scoped dashboard: a chunk from a filing outside the caller's
+    # domain(s) must never surface in search results or feed the answer
+    # synthesis — same restriction as the filings list, applied here since
+    # retrieval itself is domain-blind (pure vector similarity).
+    visible_chunks = [
+        chunk for chunk in chunks if is_domain_visible_to_role(domains.get(chunk.filing_id), key.role)
+    ]
+    if not visible_chunks:
+        return SearchResponse(answer="No relevant filings were found for this query.", sources=[])
 
     sources = [
         SearchSource(
@@ -349,7 +373,7 @@ async def search_filings(
             excerpt=chunk.chunk_text[:SEARCH_EXCERPT_MAX_CHARS],
             entity_name=entity_names.get(chunk.filing_id, "Unknown"),
         )
-        for chunk in chunks
+        for chunk in visible_chunks
     ]
 
     answer = synthesize_answer(body.query, sources)
@@ -381,7 +405,7 @@ async def get_filing_brief(
         )
 
     filing = await db.get(Filing, filing_id)
-    if filing is None:
+    if filing is None or not is_domain_visible_to_role(filing.domain, key.role):
         raise ApiError(status_code=404, code="filing_not_found", message="No filing exists with this ID.")
 
     brief = (
@@ -418,7 +442,11 @@ async def get_filing_pdf_url(
     either case, and the two aren't worth distinguishing to the caller.
     """
     filing = await db.get(Filing, filing_id)
-    if filing is None or not filing.raw_pdf_s3_key:
+    if (
+        filing is None
+        or not filing.raw_pdf_s3_key
+        or not is_domain_visible_to_role(filing.domain, key.role)
+    ):
         raise ApiError(
             status_code=404,
             code="pdf_not_found",
@@ -451,7 +479,7 @@ async def stream_filing_status(
         )
         filing = await db.get(Filing, filing_id)
 
-    if filing is None:
+    if filing is None or not is_domain_visible_to_role(filing.domain, key.role):
         await websocket.close(code=4404, reason="No filing exists with this ID.")
         return
 

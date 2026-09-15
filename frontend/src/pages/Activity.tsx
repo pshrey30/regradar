@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 
+import { allowedDomainsForRole } from '../auth/domainScope'
+import { useAuth } from '../auth/useAuth'
 import { Badge, type DomainValue, type RiskLevel } from '../components/Badge'
 import { Card } from '../components/Card'
 import { ApiError, apiFetch } from '../lib/api'
@@ -67,6 +69,8 @@ function StatusDot({ status, errorMessage }: { status: Status; errorMessage: str
 }
 
 export function Activity() {
+  const { role } = useAuth()
+  const allowedDomains = allowedDomainsForRole(role)
   const query = useQuery({
     queryKey: ['activity'],
     queryFn: () => apiFetch<ActivityItem[]>('/v1/activity'),
@@ -79,7 +83,9 @@ export function Activity() {
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-slate-900">Activity</h1>
       <p className="-mt-2 text-sm text-slate-500">
-        Every alert RegRadar has sent — Slack, email, and webhooks — most recent first.
+        {allowedDomains
+          ? `Alerts for ${allowedDomains.map((d) => d[0].toUpperCase() + d.slice(1)).join(' and ')} filings — Slack, email, and webhooks — most recent first.`
+          : 'Every alert RegRadar has sent — Slack, email, and webhooks — most recent first.'}
       </p>
 
       {query.isPending && (

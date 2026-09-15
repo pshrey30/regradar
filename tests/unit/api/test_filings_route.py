@@ -180,6 +180,85 @@ def test_list_filings_invalid_domain_returns_422(monkeypatch: pytest.MonkeyPatch
     assert response.json()["error"]["code"] == "validation_error"
 
 
+def test_analyst_role_without_domain_param_only_sees_financial(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
+    mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/filings", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    count_stmt = _real_query_calls(mock_db)[0].args[0]
+    compiled = str(count_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "'financial'" in compiled
+    assert "'clinical'" not in compiled
+    assert "'environmental'" not in compiled
+    assert "'engineering'" not in compiled
+
+
+def test_eng_lead_role_without_domain_param_only_sees_engineering(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ENG_LEAD)
+    mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/filings", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    count_stmt = _real_query_calls(mock_db)[0].args[0]
+    compiled = str(count_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "'engineering'" in compiled
+    assert "'financial'" not in compiled
+
+
+def test_legal_counsel_role_sees_clinical_and_environmental(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.LEGAL_COUNSEL)
+    mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/filings", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    count_stmt = _real_query_calls(mock_db)[0].args[0]
+    compiled = str(count_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "'clinical'" in compiled
+    assert "'environmental'" in compiled
+    assert "'financial'" not in compiled
+    assert "'engineering'" not in compiled
+
+
+def test_analyst_requesting_out_of_scope_domain_gets_empty_result_not_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
+    _mock_db(monkeypatch, total=0, rows=[])
+
+    response = TestClient(create_app()).get(
+        "/v1/filings",
+        params={"domain": "clinical"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == []
+    assert response.json()["total"] == 0
+
+
+def test_executive_and_admin_roles_are_domain_unrestricted(monkeypatch: pytest.MonkeyPatch):
+    for role in (ApiKeyRole.EXECUTIVE, ApiKeyRole.ADMIN):
+        _mock_auth_and_rate_limit(monkeypatch, role=role)
+        mock_db = _mock_db(monkeypatch, total=0, rows=[])
+
+        TestClient(create_app()).get(
+            "/v1/filings", headers={"Authorization": "Bearer rr_test-key"}
+        )
+
+        count_stmt = _real_query_calls(mock_db)[0].args[0]
+        compiled = str(count_stmt.compile(compile_kwargs={"literal_binds": True}))
+        # No IN (...) domain restriction — "domain" only appears as a
+        # selected/joined column, never as a literal-valued filter clause.
+        assert "domain IN" not in compiled
+
+
 def test_executive_role_without_risk_param_only_sees_high_critical(monkeypatch: pytest.MonkeyPatch):
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.EXECUTIVE)
     mock_db = _mock_db(monkeypatch, total=0, rows=[])

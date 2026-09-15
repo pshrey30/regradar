@@ -53,6 +53,10 @@ export default {
           // ~3.74:1 against white for small text (financial/clinical both
           // clear 4.5:1 on their own, so neither needs one).
           'environmental-text': '#0F766E',
+          // Indigo-700 — clears 4.5:1 against white on its own (like
+          // financial/clinical), distinct from every other domain and
+          // risk hue already in use.
+          engineering: '#4338CA',
         },
       },
       fontFamily: {

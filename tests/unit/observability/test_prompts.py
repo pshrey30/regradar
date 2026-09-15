@@ -113,4 +113,4 @@ def test_prompt_registry_tags_each_push_with_its_local_version(monkeypatch: pyte
     assert tags_by_identifier["regradar-search"] == ["search-v1"]
     assert tags_by_identifier["regradar-summarization"] == ["summarization-v1"]
     assert tags_by_identifier["regradar-extraction"] == ["extraction-v1"]
-    assert tags_by_identifier["regradar-triage-spot-check"] == ["triage-spot-check-v1"]
+    assert tags_by_identifier["regradar-triage-spot-check"] == ["triage-spot-check-v2"]

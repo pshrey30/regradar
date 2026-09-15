@@ -149,6 +149,35 @@ def test_get_filing_without_auth_header_returns_401():
     assert response.status_code == 401
 
 
+def test_get_filing_out_of_role_domain_returns_404_not_403(monkeypatch: pytest.MonkeyPatch):
+    """A Financial-domain filing must be invisible to an Eng Lead — 404,
+    the same response as a nonexistent ID, never a 403 that would confirm
+    a different-domain filing exists at that UUID."""
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ENG_LEAD)
+    filing = _filing_row(domain=FilingDomain.FINANCIAL)
+    _mock_detail_db(monkeypatch, filing=filing)
+
+    response = TestClient(create_app()).get(
+        f"/v1/filings/{filing.id}", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "filing_not_found"
+
+
+def test_get_filing_in_role_domain_is_visible(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ENG_LEAD)
+    filing = _filing_row(domain=FilingDomain.ENGINEERING)
+    _mock_detail_db(monkeypatch, filing=filing, brief=_brief_row())
+
+    response = TestClient(create_app()).get(
+        f"/v1/filings/{filing.id}", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["domain"] == "engineering"
+
+
 def test_get_filing_admin_role_includes_extraction(monkeypatch: pytest.MonkeyPatch):
     filing = _filing_row()
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
@@ -168,13 +197,22 @@ def test_get_filing_admin_role_includes_extraction(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize(
-    "role",
-    [ApiKeyRole.ADMIN, ApiKeyRole.ANALYST, ApiKeyRole.LEGAL_COUNSEL, ApiKeyRole.ENG_LEAD],
+    ("role", "domain"),
+    [
+        (ApiKeyRole.ADMIN, FilingDomain.FINANCIAL),
+        (ApiKeyRole.ANALYST, FilingDomain.FINANCIAL),
+        (ApiKeyRole.LEGAL_COUNSEL, FilingDomain.CLINICAL),
+        (ApiKeyRole.ENG_LEAD, FilingDomain.ENGINEERING),
+    ],
 )
 def test_get_filing_all_permitted_roles_include_extraction(
-    monkeypatch: pytest.MonkeyPatch, role: ApiKeyRole
+    monkeypatch: pytest.MonkeyPatch, role: ApiKeyRole, domain: FilingDomain
 ):
-    filing = _filing_row()
+    # domain must be within the role's own scope, or the role-scoped
+    # dashboard restriction 404s it before extraction visibility is even
+    # reached — a separate concern, covered by
+    # test_get_filing_out_of_role_domain_returns_404_not_403 above.
+    filing = _filing_row(domain=domain)
     _mock_auth_and_rate_limit(monkeypatch, role=role)
     _mock_detail_db(
         monkeypatch, filing=filing, brief=_brief_row(), extraction=_extraction_row()

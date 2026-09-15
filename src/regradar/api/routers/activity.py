@@ -4,11 +4,12 @@ finding out via Slack/email/webhook after the fact.
 
 Reads the `deliveries` table every AGENT-10 delivery attempt already
 writes to — no new tracking, just a read view over data that already
-exists. Visible to every authenticated role (matches this app's existing
-"the dashboard is a shared, organization-wide view" model — see
-schemas/auth.py's SELF_SELECTABLE_ROLES and the earlier decision that
-role controls *feature* access, not visibility of what already happened)
-via migration 0021's `deliveries_select_authenticated` RLS policy.
+exists. Every authenticated role can reach this endpoint (org-scoping is
+migration 0021's `deliveries_select_authenticated` RLS policy), but the
+role-scoped dashboard feature narrows *which* alerts it actually returns:
+a non-Admin/Executive role only ever sees alerts for filings in its own
+domain(s) — see core/domain_scope.py. An Eng Lead's activity feed shows
+Engineering alerts only, never Financial or Clinical.
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -18,6 +19,7 @@ from sqlalchemy.sql import func
 
 from regradar.api.deps import AuthenticatedKey
 from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
+from regradar.core.domain_scope import allowed_domains_for_role
 from regradar.models.delivery import Delivery
 from regradar.models.filing import Filing
 from regradar.schemas.activity import ActivityItem
@@ -38,6 +40,9 @@ async def list_activity(
         .order_by(at.desc())
         .limit(limit)
     )
+    allowed_domains = allowed_domains_for_role(key.role)
+    if allowed_domains is not None:
+        stmt = stmt.where(Filing.domain.in_(allowed_domains))
     rows = (await db.execute(stmt)).all()
 
     return [

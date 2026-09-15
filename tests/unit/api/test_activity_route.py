@@ -86,6 +86,15 @@ def _mock_activity_db(monkeypatch: pytest.MonkeyPatch, *, rows: list):
     return mock_db
 
 
+def _mock_auth_and_rate_limit_and_activity_db(
+    monkeypatch: pytest.MonkeyPatch, *, role: ApiKeyRole, rows: list
+):
+    """For tests that need to inspect the compiled query itself (domain
+    scoping) rather than just the mocked row data returned by it."""
+    _mock_auth_and_rate_limit(monkeypatch, role=role)
+    return _mock_activity_db(monkeypatch, rows=rows)
+
+
 def test_activity_visible_to_every_role(monkeypatch: pytest.MonkeyPatch):
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.EXECUTIVE)
     sent_at = datetime(2026, 1, 2, tzinfo=UTC)
@@ -162,6 +171,33 @@ def test_activity_error_message_is_null_on_sent_delivery(monkeypatch: pytest.Mon
 
     assert response.status_code == 200
     assert response.json()[0]["error_message"] is None
+
+
+def test_activity_eng_lead_query_restricted_to_engineering_domain(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mock_db = _mock_auth_and_rate_limit_and_activity_db(monkeypatch, role=ApiKeyRole.ENG_LEAD, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/activity", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    stmt = mock_db.execute.call_args_list[-1].args[0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "'engineering'" in compiled
+    assert "'financial'" not in compiled
+
+
+def test_activity_admin_query_is_domain_unrestricted(monkeypatch: pytest.MonkeyPatch):
+    mock_db = _mock_auth_and_rate_limit_and_activity_db(monkeypatch, role=ApiKeyRole.ADMIN, rows=[])
+
+    TestClient(create_app()).get(
+        "/v1/activity", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    stmt = mock_db.execute.call_args_list[-1].args[0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "domain IN" not in compiled
 
 
 def test_activity_rejects_limit_out_of_bounds(monkeypatch: pytest.MonkeyPatch):

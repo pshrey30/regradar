@@ -37,6 +37,7 @@ class FilingDomain(str, enum.Enum):
     FINANCIAL = "financial"
     CLINICAL = "clinical"
     ENVIRONMENTAL = "environmental"
+    ENGINEERING = "engineering"
     OTHER = "other"
 
 

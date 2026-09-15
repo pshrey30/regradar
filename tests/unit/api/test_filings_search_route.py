@@ -13,7 +13,7 @@ from regradar.api.main import create_app
 from regradar.api.middleware import rate_limit as rate_limit_module
 from regradar.api.routers import filings as filings_module
 from regradar.llm_routing.tiered_router import ModelChoice
-from regradar.models.enums import ApiKeyRole
+from regradar.models.enums import ApiKeyRole, FilingDomain
 from regradar.rag import answer_synthesis as answer_synthesis_module
 
 _TEST_MODEL_CHOICE = ModelChoice(
@@ -74,10 +74,16 @@ def _mock_retrieval_db(monkeypatch: pytest.MonkeyPatch, *, filing_rows: list):
     monkeypatch.setattr(db_module, "get_session_factory", lambda: mock_session_factory)
 
 
-def _filing_row(filing_id: uuid.UUID, entity_name: str = "Acme Corp"):
+def _filing_row(
+    filing_id: uuid.UUID,
+    entity_name: str = "Acme Corp",
+    *,
+    domain: FilingDomain = FilingDomain.FINANCIAL,
+):
     filing = MagicMock()
     filing.id = filing_id
     filing.entity_name = entity_name
+    filing.domain = domain
     return filing
 
 
@@ -158,7 +164,10 @@ def test_search_returns_synthesized_answer_and_sources_on_success(
             ]
         ),
     )
-    _mock_retrieval_db(monkeypatch, filing_rows=[_filing_row(filing_id, "Widget Co")])
+    _mock_retrieval_db(
+        monkeypatch,
+        filing_rows=[_filing_row(filing_id, "Widget Co", domain=FilingDomain.CLINICAL)],
+    )
 
     mock_llm_client = MagicMock()
     mock_response = MagicMock()
@@ -183,6 +192,38 @@ def test_search_returns_synthesized_answer_and_sources_on_success(
     assert body["sources"][0]["entity_name"] == "Widget Co"
     assert body["sources"][0]["filing_id"] == str(filing_id)
     assert body["sources"][0]["excerpt"] == "Widgets must be recalled."
+
+
+def test_search_excludes_chunks_outside_role_domain(monkeypatch: pytest.MonkeyPatch):
+    """A Legal Counsel searcher must never see a Financial-domain chunk in
+    its results or have it feed the synthesized answer — role-scoped
+    dashboard restriction applies to search the same as the filings list."""
+    filing_id = uuid.uuid4()
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.LEGAL_COUNSEL)
+    monkeypatch.setattr(
+        filings_module,
+        "retrieve_similar_filings",
+        AsyncMock(
+            return_value=[
+                RetrievedChunk(filing_id=filing_id, chunk_text="Q3 revenue guidance.", score=0.9)
+            ]
+        ),
+    )
+    _mock_retrieval_db(
+        monkeypatch,
+        filing_rows=[_filing_row(filing_id, "Finance Corp", domain=FilingDomain.FINANCIAL)],
+    )
+
+    response = TestClient(create_app()).post(
+        "/v1/filings/search",
+        json={"query": "what happened with revenue", "top_k": 3},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sources"] == []
+    assert body["answer"] == "No relevant filings were found for this query."
 
 
 def test_search_falls_back_to_degraded_when_llm_call_fails(monkeypatch: pytest.MonkeyPatch):

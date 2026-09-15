@@ -6,7 +6,7 @@ import { Card } from '../components/Card'
 import { ApiError, apiFetch } from '../lib/api'
 
 type Source = 'SEC' | 'FDA' | 'FINRA'
-type Domain = 'financial' | 'clinical' | 'environmental' | 'other'
+type Domain = 'financial' | 'clinical' | 'environmental' | 'engineering' | 'other'
 
 interface SourceConfigItem {
   source: Source
@@ -21,6 +21,7 @@ const DOMAINS: { value: Domain; label: string }[] = [
   { value: 'financial', label: 'Financial' },
   { value: 'clinical', label: 'Clinical' },
   { value: 'environmental', label: 'Environmental' },
+  { value: 'engineering', label: 'Engineering' },
   { value: 'other', label: 'Other' },
 ]
 

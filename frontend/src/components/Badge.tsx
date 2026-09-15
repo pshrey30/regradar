@@ -1,5 +1,5 @@
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
-export type DomainValue = 'financial' | 'clinical' | 'environmental' | 'other'
+export type DomainValue = 'financial' | 'clinical' | 'environmental' | 'engineering' | 'other'
 
 export type BadgeProps =
   | { variant: 'risk'; value: RiskLevel; className?: string }
@@ -24,6 +24,7 @@ const DOMAIN_CLASSES: Record<DomainValue, string> = {
   financial: 'bg-white border border-domain-financial text-domain-financial',
   clinical: 'bg-white border border-domain-clinical text-domain-clinical',
   environmental: 'bg-white border border-domain-environmental text-domain-environmental-text',
+  engineering: 'bg-white border border-domain-engineering text-domain-engineering',
   other: 'bg-slate-100 text-slate-600',
 }
 

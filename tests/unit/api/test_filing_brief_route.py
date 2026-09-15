@@ -10,7 +10,7 @@ import regradar.core.db as db_module
 from regradar.api import deps as deps_module
 from regradar.api.main import create_app
 from regradar.api.middleware import rate_limit as rate_limit_module
-from regradar.models.enums import ApiKeyRole
+from regradar.models.enums import ApiKeyRole, FilingDomain
 
 
 def _authenticated_key_row(role: ApiKeyRole):
@@ -100,7 +100,7 @@ def test_brief_returns_404_for_unknown_filing(monkeypatch: pytest.MonkeyPatch):
 def test_brief_returns_404_when_no_brief_exists_yet(monkeypatch: pytest.MonkeyPatch):
     filing_id = uuid.uuid4()
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
-    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id), brief=None)
+    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id, domain=FilingDomain.FINANCIAL), brief=None)
 
     response = _get_brief(TestClient(create_app()), filing_id)
 
@@ -113,7 +113,7 @@ def test_brief_defaults_to_executive_brief_when_persona_omitted(
 ):
     filing_id = uuid.uuid4()
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
-    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id), brief=_brief_row())
+    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id, domain=FilingDomain.FINANCIAL), brief=_brief_row())
 
     response = _get_brief(TestClient(create_app()), filing_id)
 
@@ -136,7 +136,7 @@ def test_brief_returns_requested_persona_for_permitted_role(
 ):
     filing_id = uuid.uuid4()
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
-    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id), brief=_brief_row())
+    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id, domain=FilingDomain.FINANCIAL), brief=_brief_row())
 
     response = _get_brief(TestClient(create_app()), filing_id, persona=persona)
 
@@ -149,7 +149,7 @@ def test_brief_returns_requested_persona_for_permitted_role(
 def test_brief_invalid_persona_returns_422(monkeypatch: pytest.MonkeyPatch):
     filing_id = uuid.uuid4()
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
-    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id), brief=_brief_row())
+    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id, domain=FilingDomain.FINANCIAL), brief=_brief_row())
 
     response = _get_brief(TestClient(create_app()), filing_id, persona="ceo")
 
@@ -167,7 +167,7 @@ def test_executive_role_always_gets_cco_regardless_of_requested_persona(
 ):
     filing_id = uuid.uuid4()
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.EXECUTIVE)
-    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id), brief=_brief_row())
+    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id, domain=FilingDomain.FINANCIAL), brief=_brief_row())
 
     response = _get_brief(TestClient(create_app()), filing_id, persona=requested_persona)
 
@@ -185,7 +185,7 @@ def test_executive_role_with_invalid_persona_still_returns_422(
     """
     filing_id = uuid.uuid4()
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.EXECUTIVE)
-    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id), brief=_brief_row())
+    _mock_brief_db(monkeypatch, filing=MagicMock(id=filing_id, domain=FilingDomain.FINANCIAL), brief=_brief_row())
 
     response = _get_brief(TestClient(create_app()), filing_id, persona="ceo")
 
