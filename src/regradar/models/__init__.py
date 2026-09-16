@@ -11,6 +11,7 @@ from regradar.models.invite import Invite
 from regradar.models.organization import Organization
 from regradar.models.organization_delivery_settings import OrganizationDeliverySettings
 from regradar.models.organization_profile import OrganizationProfile
+from regradar.models.organization_role_delivery_settings import OrganizationRoleDeliverySettings
 from regradar.models.source_config import SourceConfig
 from regradar.models.webhook import Webhook
 
@@ -26,6 +27,7 @@ __all__ = [
     "Organization",
     "OrganizationDeliverySettings",
     "OrganizationProfile",
+    "OrganizationRoleDeliverySettings",
     "SourceConfig",
     "Webhook",
 ]

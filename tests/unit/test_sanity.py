@@ -21,6 +21,7 @@ def test_all_models_register_on_base_metadata() -> None:
         "organizations",
         "organization_delivery_settings",
         "organization_profiles",
+        "organization_role_delivery_settings",
         "source_configs",
         "webhooks",
     }
