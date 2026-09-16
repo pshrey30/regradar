@@ -20,6 +20,7 @@ def test_all_models_register_on_base_metadata() -> None:
         "invites",
         "organizations",
         "organization_delivery_settings",
+        "organization_profiles",
         "source_configs",
         "webhooks",
     }
