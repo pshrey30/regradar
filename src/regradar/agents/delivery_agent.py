@@ -62,9 +62,11 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy import select
 
+from regradar.agents.relevance_agent import compute_priority_score
 from regradar.agents.state import PipelineState
 from regradar.core.config import get_settings
 from regradar.core.db import set_rls_context
+from regradar.core.domain_scope import roles_for_domain
 from regradar.core.redis_client import get_redis_client
 from regradar.delivery.sendgrid_client import send_email_alert
 from regradar.delivery.slack_client import send_slack_alert
@@ -74,6 +76,7 @@ from regradar.models.delivery import Delivery
 from regradar.models.enums import DeliveryChannel, DeliveryStatus, FilingDomain, RiskLevel
 from regradar.models.filing import Filing
 from regradar.models.organization_delivery_settings import OrganizationDeliverySettings
+from regradar.models.organization_role_delivery_settings import OrganizationRoleDeliverySettings
 from regradar.models.webhook import Webhook
 
 logger = logging.getLogger(__name__)
@@ -127,6 +130,13 @@ def _webhook_matches(
         and _RISK_ORDER[risk_level] < _RISK_ORDER[webhook.filter_min_risk]
     )
     return domain_matches and risk_matches
+
+
+def _build_role_alert_message(
+    *, priority_score: float | None, rationale: str, recommended_action: str
+) -> str:
+    score_text = f"{priority_score:.0f}/100" if priority_score is not None else "not scored"
+    return f"Why this matters to you: {rationale} Recommended action: {recommended_action} Priority: {score_text}."
 
 
 async def _record_delivery(
@@ -189,7 +199,9 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
             Delivery.filing_id == state.filing_id, Delivery.status == DeliveryStatus.SENT
         )
     )
-    already_sent = {(d.channel, d.webhook_id) for d in existing.scalars().all()}
+    existing_deliveries = existing.scalars().all()
+    already_sent = {(d.channel, d.webhook_id) for d in existing_deliveries}
+    already_sent_recipients = {(d.channel, d.recipient) for d in existing_deliveries}
 
     statuses: list[str] = []
     any_sent = False
@@ -362,6 +374,93 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
         if result.status == DeliveryStatus.SENT:
             any_sent = True
         statuses.append(f"webhook:{webhook.id}={result.status.value}")
+
+    # --- Role-routed alerts (ORG-11) ---
+    # Additive to the org-wide Slack/email above — a role channel is a
+    # second destination for the same filing, not a replacement.
+    #
+    # priority_score is recomputed here (via the same compute_priority_score
+    # relevance_agent.py uses) rather than read from Filing.priority_score:
+    # deliver_node runs inside the same graph invocation that produces
+    # state.relevance, before pipeline_tasks.py ever persists
+    # Filing.priority_score — there is no persisted value yet to read.
+    priority_score = (
+        None
+        if state.relevance is None or state.risk_level is None
+        else compute_priority_score(state.risk_level, state.relevance.relevance_score)
+    )
+    for role in roles_for_domain(state.domain):
+        role_settings = await db.get(OrganizationRoleDeliverySettings, (filing.organization_id, role))
+        if role_settings is None or state.relevance is None:
+            continue
+        role_message = _build_role_alert_message(
+            priority_score=priority_score,
+            rationale=state.relevance.rationale,
+            recommended_action=state.relevance.recommended_action,
+        )
+        if role_settings.slack_webhook_url and (
+            DeliveryChannel.SLACK,
+            f"slack:role:{role.value}",
+        ) not in already_sent_recipients:
+            try:
+                result = await send_slack_alert(
+                    webhook_url=role_settings.slack_webhook_url,
+                    entity_name=filing.entity_name,
+                    filing_type=filing.filing_type,
+                    filing_url=filing.filing_url,
+                    risk_level=state.risk_level,
+                    cco_summary=role_message,
+                )
+            except Exception as exc:  # noqa: BLE001 — one role's channel crashing must not block others
+                logger.warning(
+                    "Role Slack delivery raised for filing %s role %s: %s",
+                    state.filing_id,
+                    role.value,
+                    exc,
+                )
+                result = DeliveryResult(
+                    status=DeliveryStatus.FAILED,
+                    response_code=None,
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+            await _record_delivery(
+                db,
+                filing.id,
+                filing.organization_id,
+                DeliveryChannel.SLACK,
+                f"slack:role:{role.value}",
+                result,
+            )
+            if result.status == DeliveryStatus.SENT:
+                any_sent = True
+            statuses.append(f"slack_role_{role.value}={result.status.value}")
+        if role_settings.email and (DeliveryChannel.EMAIL, role_settings.email) not in already_sent_recipients:
+            try:
+                result = await send_email_alert(
+                    recipient=role_settings.email,
+                    entity_name=filing.entity_name,
+                    filing_type=filing.filing_type,
+                    risk_level=state.risk_level,
+                    executive_brief=role_message,
+                )
+            except Exception as exc:  # noqa: BLE001 — see Slack's comment above
+                logger.warning(
+                    "Role email delivery raised for filing %s role %s: %s",
+                    state.filing_id,
+                    role.value,
+                    exc,
+                )
+                result = DeliveryResult(
+                    status=DeliveryStatus.FAILED,
+                    response_code=None,
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+            await _record_delivery(
+                db, filing.id, filing.organization_id, DeliveryChannel.EMAIL, role_settings.email, result
+            )
+            if result.status == DeliveryStatus.SENT:
+                any_sent = True
+            statuses.append(f"email_role_{role.value}={result.status.value}")
 
     return state.model_copy(
         update={

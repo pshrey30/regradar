@@ -95,9 +95,17 @@ def _make_db(
     webhooks: list,
     *,
     delivery_settings: MagicMock | None = None,
+    role_settings: MagicMock | None = None,
 ) -> AsyncMock:
     db = AsyncMock()
-    db.get = AsyncMock(side_effect=[filing, delivery_settings])
+    # ORG-11's role fan-out unconditionally looks up
+    # OrganizationRoleDeliverySettings for each role_for_domain(state.domain)
+    # entry (state.domain defaults to FilingDomain.FINANCIAL in _make_state,
+    # which maps to exactly one role, ANALYST) even when state.relevance is
+    # None — it `continue`s only after that lookup. A real DB would just
+    # return None for an unconfigured role, so this third db.get() value
+    # models that, keeping every pre-existing test's assertions unchanged.
+    db.get = AsyncMock(side_effect=[filing, delivery_settings, role_settings])
 
     deliveries_result = MagicMock()
     deliveries_result.scalars.return_value.all.return_value = existing_deliveries
@@ -725,3 +733,171 @@ async def test_record_slack_failure_does_not_log_below_threshold(
         await _record_slack_failure_and_maybe_notify(org_id)
 
     assert not any("Slack reconnection needed" in record.message for record in caplog.records)
+
+
+# --- ORG-11: role-routed alert fan-out ---
+
+from regradar.agents.state import RelevanceResult
+from regradar.models.organization_role_delivery_settings import OrganizationRoleDeliverySettings
+
+
+def _make_role_settings(
+    *, slack_webhook_url: str | None = None, email: str | None = None
+) -> MagicMock:
+    settings_row = MagicMock(spec=OrganizationRoleDeliverySettings)
+    settings_row.slack_webhook_url = slack_webhook_url
+    settings_row.email = email
+    return settings_row
+
+
+def _make_db_with_role_settings(
+    filing: MagicMock,
+    existing_deliveries: list,
+    webhooks: list,
+    *,
+    delivery_settings: MagicMock | None = None,
+    role_settings: MagicMock | None = None,
+) -> AsyncMock:
+    db = AsyncMock()
+    db.get = AsyncMock(side_effect=[filing, delivery_settings, role_settings])
+
+    deliveries_result = MagicMock()
+    deliveries_result.scalars.return_value.all.return_value = existing_deliveries
+    webhooks_result = MagicMock()
+    webhooks_result.scalars.return_value.all.return_value = webhooks
+    query_results = iter([deliveries_result, webhooks_result])
+
+    async def _execute(stmt, *args, **kwargs):
+        if "set_config" in getattr(stmt, "text", ""):
+            return MagicMock()
+        return next(query_results)
+
+    db.execute = AsyncMock(side_effect=_execute)
+    db.add = MagicMock()
+    db.commit = AsyncMock()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_routes_engineering_filing_to_eng_lead_slack() -> None:
+    filing_id = uuid.uuid4()
+    filing = _make_filing(filing_id)
+    state = _make_state(risk_level=RiskLevel.HIGH)
+    state = state.model_copy(
+        update={
+            "domain": FilingDomain.ENGINEERING,
+            "relevance": RelevanceResult(
+                relevance_score=0.9,
+                matched_signals={"products": ["widget"]},
+                rationale="This affects your widget product line.",
+                recommended_action="Audit your widget suppliers.",
+            ),
+        }
+    )
+    role_settings = _make_role_settings(slack_webhook_url=_SLACK_URL)
+    db = _make_db_with_role_settings(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=None,
+        role_settings=role_settings,
+    )
+
+    with patch(
+        "regradar.agents.delivery_agent.send_slack_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=200)),
+    ) as mock_send_slack:
+        await deliver_node(state, config={"configurable": {"db": db}})
+
+    mock_send_slack.assert_awaited_once()
+    call_kwargs = mock_send_slack.call_args.kwargs
+    assert call_kwargs["webhook_url"] == _SLACK_URL
+    assert "widget" in call_kwargs["cco_summary"]
+    assert "Audit your widget suppliers" in call_kwargs["cco_summary"]
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_skips_role_fanout_when_no_role_settings_configured() -> None:
+    filing_id = uuid.uuid4()
+    filing = _make_filing(filing_id)
+    state = _make_state(risk_level=RiskLevel.HIGH)
+    state = state.model_copy(update={"domain": FilingDomain.ENGINEERING, "relevance": None})
+    db = _make_db_with_role_settings(
+        filing, existing_deliveries=[], webhooks=[], delivery_settings=None, role_settings=None
+    )
+
+    with patch(
+        "regradar.agents.delivery_agent.send_slack_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=200)),
+    ) as mock_send_slack:
+        await deliver_node(state, config={"configurable": {"db": db}})
+
+    mock_send_slack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_role_fanout_is_additive_to_org_wide_slack() -> None:
+    filing_id = uuid.uuid4()
+    filing = _make_filing(filing_id)
+    state = _make_state(risk_level=RiskLevel.HIGH)
+    state = state.model_copy(
+        update={
+            "domain": FilingDomain.ENGINEERING,
+            "relevance": RelevanceResult(
+                relevance_score=0.9,
+                matched_signals={},
+                rationale="Matches your product line.",
+                recommended_action="Investigate.",
+            ),
+        }
+    )
+    org_wide_settings = _make_delivery_settings(_SLACK_URL)
+    role_settings = _make_role_settings(slack_webhook_url="https://hooks.slack.com/services/ROLE")
+    db = _make_db_with_role_settings(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=org_wide_settings,
+        role_settings=role_settings,
+    )
+
+    with patch(
+        "regradar.agents.delivery_agent.send_slack_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=200)),
+    ) as mock_send_slack:
+        await deliver_node(state, config={"configurable": {"db": db}})
+
+    assert mock_send_slack.await_count == 2
+    sent_urls = {call.kwargs["webhook_url"] for call in mock_send_slack.await_args_list}
+    assert sent_urls == {_SLACK_URL, "https://hooks.slack.com/services/ROLE"}
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_role_fanout_email_uses_role_email_recipient() -> None:
+    filing_id = uuid.uuid4()
+    filing = _make_filing(filing_id)
+    state = _make_state(risk_level=RiskLevel.HIGH)
+    state = state.model_copy(
+        update={
+            "domain": FilingDomain.FINANCIAL,
+            "relevance": RelevanceResult(
+                relevance_score=0.7,
+                matched_signals={},
+                rationale="Relevant to your reporting obligations.",
+                recommended_action="Review your Q3 filing.",
+            ),
+        }
+    )
+    role_settings = _make_role_settings(email="analyst-team@example.com")
+    db = _make_db_with_role_settings(
+        filing, existing_deliveries=[], webhooks=[], delivery_settings=None, role_settings=role_settings
+    )
+
+    with patch(
+        "regradar.agents.delivery_agent.send_email_alert",
+        new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=202)),
+    ) as mock_send_email:
+        await deliver_node(state, config={"configurable": {"db": db}})
+
+    mock_send_email.assert_awaited_once()
+    assert mock_send_email.call_args.kwargs["recipient"] == "analyst-team@example.com"
