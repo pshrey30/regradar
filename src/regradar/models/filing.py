@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import Float, ForeignKey, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -60,6 +60,9 @@ class Filing(Base):
         SAEnum(RiskLevel, name="risk_level", values_callable=pg_enum_values), nullable=True
     )
     priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    relevance_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recommended_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    matched_signals: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     classification_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
