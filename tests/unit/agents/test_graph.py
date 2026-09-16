@@ -33,3 +33,17 @@ def test_route_after_triage_skips_retrieve_for_low_risk() -> None:
     state = _make_state(risk_level=RiskLevel.LOW)
 
     assert route_after_triage(state) == "analyze"
+
+
+def test_graph_places_relevance_between_analyze_and_summarize() -> None:
+    """Structural test that relevance sits between analyze and summarize."""
+    from regradar.agents.graph import build_graph
+
+    graph = build_graph()
+    node_names = set(graph.get_graph().nodes.keys())
+    assert "relevance" in node_names
+
+    edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
+    assert ("analyze", "relevance") in edges
+    assert ("relevance", "summarize") in edges
+    assert ("analyze", "summarize") not in edges

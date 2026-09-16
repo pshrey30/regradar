@@ -16,6 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 from regradar.agents.analysis_agent import analyze_node
 from regradar.agents.delivery_agent import deliver_node
 from regradar.agents.rag_retrieval_agent import retrieve_node
+from regradar.agents.relevance_agent import relevance_node
 from regradar.agents.state import PipelineState
 from regradar.agents.summarization_agent import summarize_node
 from regradar.agents.triage_agent import triage_node
@@ -47,6 +48,7 @@ def build_graph() -> CompiledStateGraph:
     graph.add_node("triage", triage_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("analyze", analyze_node)
+    graph.add_node("relevance", relevance_node)
     graph.add_node("summarize", summarize_node)
     graph.add_node("deliver", deliver_node)
 
@@ -55,7 +57,8 @@ def build_graph() -> CompiledStateGraph:
         "triage", route_after_triage, {"retrieve": "retrieve", "analyze": "analyze"}
     )
     graph.add_edge("retrieve", "analyze")
-    graph.add_edge("analyze", "summarize")
+    graph.add_edge("analyze", "relevance")
+    graph.add_edge("relevance", "summarize")
     graph.add_edge("summarize", "deliver")
     graph.add_edge("deliver", END)
 
