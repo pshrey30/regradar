@@ -42,3 +42,36 @@ def test_is_domain_visible_matches_restricted_role_correctly():
     assert is_domain_visible_to_role(FilingDomain.CLINICAL, ApiKeyRole.LEGAL_COUNSEL) is True
     assert is_domain_visible_to_role(FilingDomain.ENVIRONMENTAL, ApiKeyRole.LEGAL_COUNSEL) is True
     assert is_domain_visible_to_role(FilingDomain.FINANCIAL, ApiKeyRole.LEGAL_COUNSEL) is False
+
+
+from regradar.core.domain_scope import roles_for_domain
+
+
+def test_roles_for_domain_none_returns_empty_list():
+    assert roles_for_domain(None) == []
+
+
+def test_roles_for_domain_other_returns_empty_list():
+    assert roles_for_domain(FilingDomain.OTHER) == []
+
+
+def test_roles_for_domain_financial_returns_analyst():
+    assert roles_for_domain(FilingDomain.FINANCIAL) == [ApiKeyRole.ANALYST]
+
+
+def test_roles_for_domain_engineering_returns_eng_lead():
+    assert roles_for_domain(FilingDomain.ENGINEERING) == [ApiKeyRole.ENG_LEAD]
+
+
+def test_roles_for_domain_clinical_returns_legal_counsel():
+    assert roles_for_domain(FilingDomain.CLINICAL) == [ApiKeyRole.LEGAL_COUNSEL]
+
+
+def test_roles_for_domain_environmental_returns_legal_counsel():
+    assert roles_for_domain(FilingDomain.ENVIRONMENTAL) == [ApiKeyRole.LEGAL_COUNSEL]
+
+
+def test_roles_for_domain_never_returns_admin_or_executive():
+    for domain in FilingDomain:
+        assert ApiKeyRole.ADMIN not in roles_for_domain(domain)
+        assert ApiKeyRole.EXECUTIVE not in roles_for_domain(domain)

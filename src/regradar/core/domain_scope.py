@@ -37,3 +37,21 @@ def is_domain_visible_to_role(domain: FilingDomain | None, role: ApiKeyRole) -> 
     if allowed is None:
         return True
     return domain is not None and domain in allowed
+
+
+def roles_for_domain(domain: FilingDomain | None) -> list[ApiKeyRole]:
+    """Inverse of ROLE_DOMAIN_RESTRICTIONS: which domain-restricted role(s)
+    an alert for this filing's domain should route to. Returns [] for
+    domain=None (unclassified) or FilingDomain.OTHER (no restricted role
+    maps to it) — such filings still reach Admin/Executive via the
+    existing org-wide delivery channels, just with no role-specific
+    fan-out. ADMIN/EXECUTIVE are never returned — they're
+    domain-unrestricted by design (see this module's own docstring) and
+    already covered by org-wide delivery."""
+    if domain is None:
+        return []
+    return [
+        role
+        for role, allowed in ROLE_DOMAIN_RESTRICTIONS.items()
+        if allowed is not None and domain in allowed
+    ]
