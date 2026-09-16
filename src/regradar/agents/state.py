@@ -38,6 +38,29 @@ class ExtractionResult(BaseModel):
     model_used: str | None = None
 
 
+class OrgProfileSnapshot(BaseModel):
+    """The receiving organization's business context (ORG-11's
+    OrganizationProfile row, flattened into PipelineState so relevance_node
+    stays DB-free like every other pure node)."""
+
+    industry: str | None = None
+    business_description: str | None = None
+    watchlist_entities: list[str] = []
+    products: list[str] = []
+    risk_priorities: list[str] = []
+
+
+class RelevanceResult(BaseModel):
+    """Output of the Relevance Agent (ORG-11): how much this filing matters
+    to the specific receiving organization, and what to do about it."""
+
+    relevance_score: float
+    matched_signals: dict = {}
+    rationale: str
+    recommended_action: str
+    model_used: str | None = None
+
+
 class BriefSet(BaseModel):
     """The four persona briefs produced by the Summarization Agent (AGENT-08).
 
@@ -63,5 +86,7 @@ class PipelineState(BaseModel):
     chunks: list[Chunk] | None = None
     extraction: ExtractionResult | None = None
     briefs: BriefSet | None = None
+    org_profile: OrgProfileSnapshot | None = None
+    relevance: RelevanceResult | None = None
     delivery_status: str | None = None
     delivery_success: bool | None = None

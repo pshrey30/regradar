@@ -5,7 +5,14 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from regradar.agents.state import BriefSet, ExtractionResult, PipelineState, RetrievedChunk
+from regradar.agents.state import (
+    BriefSet,
+    ExtractionResult,
+    OrgProfileSnapshot,
+    PipelineState,
+    RelevanceResult,
+    RetrievedChunk,
+)
 from regradar.models.enums import FilingDomain, RiskLevel
 
 
@@ -100,3 +107,27 @@ def test_pipeline_state_chunks_defaults_to_none() -> None:
     state = PipelineState(filing_id=uuid.uuid4(), raw_text="text")
 
     assert state.chunks is None
+
+
+def test_pipeline_state_defaults_org_profile_and_relevance_to_none() -> None:
+    state = PipelineState(filing_id=uuid.uuid4(), raw_text="text")
+    assert state.org_profile is None
+    assert state.relevance is None
+
+
+def test_org_profile_snapshot_defaults_to_empty_lists() -> None:
+    snapshot = OrgProfileSnapshot()
+    assert snapshot.watchlist_entities == []
+    assert snapshot.products == []
+    assert snapshot.risk_priorities == []
+
+
+def test_relevance_result_requires_its_four_core_fields() -> None:
+    result = RelevanceResult(
+        relevance_score=0.8,
+        matched_signals={"watchlist_entities": ["Acme Corp"]},
+        rationale="Acme Corp is on your watchlist.",
+        recommended_action="Review the filing for competitive impact.",
+    )
+    assert result.relevance_score == 0.8
+    assert result.model_used is None
