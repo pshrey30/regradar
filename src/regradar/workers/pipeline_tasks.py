@@ -15,12 +15,14 @@ from celery.utils.log import get_task_logger
 from sqlalchemy import select
 
 from regradar.agents.graph import build_graph
-from regradar.agents.state import PipelineState
+from regradar.agents.relevance_agent import compute_priority_score
+from regradar.agents.state import OrgProfileSnapshot, PipelineState
 from regradar.core.db import get_session_factory, set_rls_context
 from regradar.models.brief import Brief
 from regradar.models.enums import FilingStatus
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
+from regradar.models.organization_profile import OrganizationProfile
 from regradar.rag.chunking import chunk_filing
 from regradar.rag.embeddings import embed_chunks
 from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_document_bytes
@@ -62,7 +64,22 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             except Exception as exc:  # noqa: BLE001 — never crash the pipeline over a bad/missing PDF
                 logger.warning("PDF extraction failed for filing %s: %s", filing_id, exc)
 
-        state = PipelineState(filing_id=filing.id, raw_text=raw_text, chunks=chunks or None)
+        profile_row = await db.get(OrganizationProfile, filing.organization_id)
+        org_profile = (
+            OrgProfileSnapshot(
+                industry=profile_row.industry,
+                business_description=profile_row.business_description,
+                watchlist_entities=list(profile_row.watchlist_entities),
+                products=list(profile_row.products),
+                risk_priorities=list(profile_row.risk_priorities),
+            )
+            if profile_row is not None
+            else None
+        )
+
+        state = PipelineState(
+            filing_id=filing.id, raw_text=raw_text, chunks=chunks or None, org_profile=org_profile
+        )
         result = await build_graph().ainvoke(state, config={"configurable": {"db": db}})
 
         # Real bug found live (first time this pipeline ever ran against a
@@ -89,6 +106,14 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             filing.domain = result["domain"]
             filing.risk_level = result["risk_level"]
             filing.classification_confidence = result["classification_confidence"]
+            relevance_result = result.get("relevance")
+            if relevance_result is not None:
+                filing.priority_score = compute_priority_score(
+                    result["risk_level"], relevance_result.relevance_score
+                )
+                filing.relevance_rationale = relevance_result.rationale
+                filing.recommended_action = relevance_result.recommended_action
+                filing.matched_signals = relevance_result.matched_signals
             extraction_missing = result["extraction"] is None and chunks
             briefs_missing = result["extraction"] is not None and result["briefs"] is None
             if extraction_missing or briefs_missing:

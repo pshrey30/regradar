@@ -55,7 +55,7 @@ def test_process_filing_persists_classification_on_success(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -87,7 +87,7 @@ def test_process_filing_persists_classification_on_success(
 
     process_filing.run(str(filing_id))
 
-    mock_db.get.assert_awaited_once_with(Filing, filing_id)
+    mock_db.get.assert_any_await(Filing, filing_id)
     assert filing.domain == FilingDomain.FINANCIAL
     assert filing.risk_level == RiskLevel.LOW
     assert filing.classification_confidence == 0.9
@@ -109,7 +109,7 @@ def test_process_filing_reasserts_rls_role_after_graph_invoke(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -164,7 +164,7 @@ def test_process_filing_clears_stale_processing_error_on_new_run(
     filing.processing_error = "old error from a previous failed attempt"
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -208,7 +208,7 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -253,7 +253,7 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -319,7 +319,7 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -372,7 +372,7 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -421,7 +421,7 @@ def test_process_filing_persists_extraction_on_success(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -491,7 +491,7 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -564,7 +564,7 @@ def test_process_filing_marks_complete_when_delivery_ran(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -639,7 +639,7 @@ def test_process_filing_stays_classifying_when_delivery_ran_but_nothing_sent(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -705,7 +705,7 @@ def test_process_filing_stays_classifying_when_delivery_status_none(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -766,7 +766,7 @@ def test_process_filing_marks_needs_review_when_summarization_fails(
     filing.raw_pdf_s3_key = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -825,7 +825,7 @@ def test_process_filing_continues_when_embed_chunks_raises(
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -919,7 +919,7 @@ def test_process_filing_continues_when_brief_commit_raises(
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     # The first commit (filing status) and second commit (Extraction) succeed;
     # the third commit (Brief) raises — isolating the failure to Brief
     # persistence specifically, mirroring the embed_chunks-failure test above.
@@ -1020,7 +1020,7 @@ def test_process_filing_calls_chunk_filing_before_graph_invoke(
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -1112,7 +1112,7 @@ async def test_mark_filing_failed_updates_status_and_error(monkeypatch: pytest.M
     filing.processing_error = None
 
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(return_value=filing)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -1262,3 +1262,165 @@ async def test_process_pending_filings_continues_after_one_failure(
     assert processed == [str(filing_id_1), str(filing_id_2)]
     assert results == [(filing_id_1, False), (filing_id_2, True)]
     assert marked_failed == [(str(filing_id_1), "pipeline blew up")]
+
+
+from regradar.agents.state import RelevanceResult
+from regradar.models.organization_profile import OrganizationProfile
+
+
+def test_process_filing_loads_org_profile_before_building_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.organization_id = org_id
+    filing.raw_pdf_s3_key = None
+
+    profile_row = MagicMock(spec=OrganizationProfile)
+    profile_row.industry = "medical device manufacturing"
+    profile_row.business_description = "We make insulin pumps."
+    profile_row.watchlist_entities = ["Acme Corp"]
+    profile_row.products = ["insulin pumps"]
+    profile_row.risk_priorities = ["clinical trial safety"]
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(
+        side_effect=lambda model, *args, **kwargs: (
+            filing if model is Filing else profile_row if model is OrganizationProfile else None
+        )
+    )
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+
+    captured_state = {}
+
+    async def _fake_ainvoke(state, config=None):
+        captured_state["org_profile"] = state.org_profile
+        return {
+            "domain": FilingDomain.CLINICAL,
+            "risk_level": RiskLevel.HIGH,
+            "classification_confidence": 0.9,
+            "extraction": None,
+            "briefs": None,
+            "relevance": None,
+            "delivery_status": None,
+            "delivery_success": None,
+        }
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "build_graph", lambda: MagicMock(ainvoke=_fake_ainvoke)
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert captured_state["org_profile"] is not None
+    assert captured_state["org_profile"].industry == "medical device manufacturing"
+    assert captured_state["org_profile"].watchlist_entities == ["Acme Corp"]
+
+
+def test_process_filing_persists_priority_score_and_relevance_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.organization_id = uuid.uuid4()
+    filing.raw_pdf_s3_key = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": FilingDomain.CLINICAL,
+                    "risk_level": RiskLevel.HIGH,
+                    "classification_confidence": 0.9,
+                    "extraction": None,
+                    "briefs": None,
+                    "relevance": RelevanceResult(
+                        relevance_score=0.9,
+                        matched_signals={"watchlist_entities": ["Acme Corp"]},
+                        rationale="Acme Corp is on your watchlist.",
+                        recommended_action="Review the filing.",
+                        model_used="llama3.1",
+                    ),
+                    "delivery_status": None,
+                    "delivery_success": None,
+                }
+            )
+        ),
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert filing.priority_score == round(100 * (0.5 * (2 / 3) + 0.5 * 0.9), 1)
+    assert filing.relevance_rationale == "Acme Corp is on your watchlist."
+    assert filing.recommended_action == "Review the filing."
+    assert filing.matched_signals == {"watchlist_entities": ["Acme Corp"]}
+
+
+def test_process_filing_leaves_relevance_fields_unset_when_unclassified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.organization_id = uuid.uuid4()
+    filing.raw_pdf_s3_key = None
+    filing.priority_score = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: MagicMock(
+            ainvoke=AsyncMock(
+                return_value={
+                    "domain": None,
+                    "risk_level": None,
+                    "classification_confidence": None,
+                    "extraction": None,
+                    "briefs": None,
+                    "relevance": None,
+                    "delivery_status": None,
+                    "delivery_success": None,
+                }
+            )
+        ),
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert filing.priority_score is None
+    assert filing.status == FilingStatus.NEEDS_CLASSIFICATION
