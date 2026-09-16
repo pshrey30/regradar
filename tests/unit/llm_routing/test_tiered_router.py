@@ -125,3 +125,9 @@ def test_build_client_constructs_openai_client_with_choice_settings() -> None:
     client = build_client(choice)
     assert isinstance(client, OpenAI)
     assert str(client.base_url).rstrip("/") == "http://localhost:11434/v1"
+
+
+def test_select_model_accepts_relevance_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("USE_LOCAL_LLM", "true")
+    choice = select_model(RiskLevel.HIGH, task="relevance")
+    assert choice.tier == "high"

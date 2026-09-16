@@ -36,7 +36,7 @@ _RISK_ORDER: dict[RiskLevel, int] = {
 }
 
 Tier = Literal["high", "low"]
-Task = Literal["analysis", "summarization"]
+Task = Literal["analysis", "summarization", "relevance"]
 
 
 class ModelChoice(BaseModel):
