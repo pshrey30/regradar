@@ -4,8 +4,8 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _no_real_dotenv_fallback(monkeypatch: pytest.MonkeyPatch):
-    """Never let a real local .env file leak into test outcomes.
+def _no_real_dotenv_fallback(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
+    """Never let a real local .env file leak into test outcomes, except for live tests.
 
     Settings.model_config sets env_file=".env" so the real app can run with
     just a .env file and no exported env vars. But that means any test that
@@ -19,10 +19,19 @@ def _no_real_dotenv_fallback(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv/os.environ values (and field defaults) apply,
     matching the isolation tests/unit/test_config.py already gets for free
     via its own explicit Settings(_env_file=None) construction.
+
+    Exception: tests marked with @pytest.mark.live need real configuration to
+    reach actual external services (database, redis, LLM server), so they
+    retain env_file=".env" to access the real .env file.
     """
     from regradar.core.config import Settings
 
-    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    if "live" in request.keywords:
+        # Live tests need real config to connect to actual services
+        monkeypatch.setitem(Settings.model_config, "env_file", ".env")
+    else:
+        # Unit tests get strict isolation: no real .env fallback
+        monkeypatch.setitem(Settings.model_config, "env_file", None)
 
 
 @pytest.fixture(autouse=True)

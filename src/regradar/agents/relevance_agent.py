@@ -184,7 +184,7 @@ def relevance_node(state: PipelineState) -> PipelineState:
                 model_used=model_name,
             )
             return state.model_copy(update={"relevance": relevance})
-        except (APIConnectionError, RateLimitError, InternalServerError, json.JSONDecodeError, RelevanceError) as exc:
+        except Exception as exc:  # noqa: BLE001
             last_error = exc
             logger.warning(
                 "Relevance scoring attempt %d failed for filing %s: %s",
