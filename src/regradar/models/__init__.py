@@ -9,6 +9,7 @@ from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
 from regradar.models.invite import Invite
 from regradar.models.organization import Organization
+from regradar.models.organization_profile import OrganizationProfile
 from regradar.models.organization_delivery_settings import OrganizationDeliverySettings
 from regradar.models.source_config import SourceConfig
 from regradar.models.webhook import Webhook
@@ -23,6 +24,7 @@ __all__ = [
     "FilingChunk",
     "Invite",
     "Organization",
+    "OrganizationProfile",
     "OrganizationDeliverySettings",
     "SourceConfig",
     "Webhook",
