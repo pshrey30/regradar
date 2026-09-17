@@ -16,8 +16,11 @@ triage_agent.py's spot_check_classification established.
 
 import json
 import logging
+from typing import cast
 
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
+from openai.types.shared_params import ResponseFormatJSONSchema
 
 from regradar.agents.state import OrgProfileSnapshot, PipelineState, RelevanceResult
 from regradar.agents.triage_agent import SEVERITY_ORDER
@@ -117,16 +120,22 @@ def _build_relevance_prompt(state: PipelineState) -> str:
 
 def _call_relevance_model(client: OpenAI, model: str, prompt: str, strict_retry: bool) -> dict:
     system_prompt = RELEVANCE_SYSTEM_PROMPT + (RELEVANCE_RETRY_SUFFIX if strict_retry else "")
+    messages: list[ChatCompletionMessageParam] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+    response_format: ResponseFormatJSONSchema = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "relevance",
+            "schema": cast(dict[str, object], RELEVANCE_SCHEMA),
+            "strict": True,
+        },
+    }
     response = client.chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {"name": "relevance", "schema": RELEVANCE_SCHEMA, "strict": True},
-        },
+        messages=messages,
+        response_format=response_format,
         temperature=0,
     )
     content = response.choices[0].message.content or ""
@@ -176,7 +185,7 @@ def relevance_node(state: PipelineState) -> PipelineState:
         return state.model_copy(update={"relevance": _neutral_result()})
 
     prompt = _build_relevance_prompt(state)
-    client, model_name, choice = _get_llm_client(state.risk_level)
+    client, model_name, _choice = _get_llm_client(state.risk_level)
 
     last_error: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
