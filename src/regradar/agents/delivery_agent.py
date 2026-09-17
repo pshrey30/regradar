@@ -318,6 +318,14 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
             statuses.append("email=not_configured")
 
     # --- Webhooks ---
+    # Re-assert RLS context before this read — see the comment above
+    # _record_delivery: the Slack, fallback-email, and email blocks above may
+    # each have already committed, and each commit ends the transaction that
+    # set_config(..., true) scoped `app.current_role` to. Without this,
+    # webhooks_select's RLS policy (owner/admin/service only) no longer sees
+    # the reverted GUC and this SELECT silently returns zero rows instead of
+    # erroring, so a fully-configured org gets no webhook fan-out at all.
+    await set_rls_context(db, role="service")
     # SEC-05: `service` bypasses RLS org-scoping entirely (it needs
     # cross-org write access), so this read must filter to the filing's
     # own organization explicitly — without this, a filing would fan out

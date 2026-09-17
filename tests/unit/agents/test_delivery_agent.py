@@ -337,7 +337,15 @@ async def test_deliver_node_scopes_webhook_query_to_filings_own_organization(
 
     await deliver_node(state, _config(db))
 
-    webhooks_call = db.execute.call_args_list[1]
+    # The webhook re-assertion fix (final whole-branch review) adds a
+    # set_rls_context call -- and its underlying set_config execute() --
+    # immediately before this query, so find the webhook SELECT by content
+    # rather than assuming a fixed call index.
+    webhooks_call = next(
+        call
+        for call in db.execute.call_args_list
+        if "set_config" not in getattr(call.args[0], "text", "") and "webhooks" in str(call.args[0]).lower()
+    )
     compiled = str(webhooks_call.args[0].compile(compile_kwargs={"literal_binds": True}))
     # literal_binds renders a UUID without dashes — compare the hex form.
     assert filing.organization_id.hex in compiled
@@ -983,5 +991,79 @@ async def test_deliver_node_reasserts_rls_context_before_role_fanout_lookup() ->
         "set_rls_context was not re-asserted after the org-wide delivery's commit "
         "and before the role fan-out's db.get(OrganizationRoleDeliverySettings) lookup "
         "-- this is the exact bug found in Task 11 live verification."
+    )
+    assert mock_set_rls_context.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_reasserts_rls_context_before_webhook_fanout_lookup() -> None:
+    """Regression test for the pre-existing bug found in the final whole-branch
+    review: the webhook fan-out's db.execute(select(Webhook)...) read has no
+    set_rls_context re-assertion before it, even though it runs after the
+    Slack block above (which commits via _record_delivery). Postgres'
+    set_config(..., true) is transaction-scoped, so that earlier commit
+    silently reverts app.current_role to '' -- and webhooks_select's RLS
+    policy (owner/admin/service only) then filters the SELECT to zero rows
+    instead of erroring, so a fully-configured org gets no webhook fan-out at
+    all. This asserts set_rls_context is re-asserted strictly between the
+    Slack block's commit and the webhook query.
+    """
+    filing_id = uuid.uuid4()
+    filing = _make_filing(filing_id)
+    state = _make_state(risk_level=RiskLevel.HIGH)
+
+    delivery_settings = _make_delivery_settings(_SLACK_URL)
+    db = _make_db(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=delivery_settings,
+        role_settings=None,
+    )
+
+    call_order: list[str] = []
+    original_db_execute = db.execute
+
+    async def _tracking_execute(stmt, *args, **kwargs):
+        result = await original_db_execute(stmt, *args, **kwargs)
+        if "set_config" not in getattr(stmt, "text", "") and "webhooks" in str(stmt).lower():
+            call_order.append("db.execute:webhooks")
+        return result
+
+    db.execute = AsyncMock(side_effect=_tracking_execute)
+    db.commit = AsyncMock(side_effect=lambda: call_order.append("db.commit"))
+
+    async def _tracking_set_rls_context(*args, **kwargs):
+        call_order.append("set_rls_context")
+
+    with (
+        patch(
+            "regradar.agents.delivery_agent.send_slack_alert",
+            new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=200)),
+        ),
+        patch(
+            "regradar.agents.delivery_agent.set_rls_context",
+            new=AsyncMock(side_effect=_tracking_set_rls_context),
+        ) as mock_set_rls_context,
+    ):
+        await deliver_node(state, config={"configurable": {"db": db}})
+
+    # The Slack block commits (via _record_delivery) before the webhook
+    # fan-out's query even starts -- that earlier commit is what silently
+    # reverts the RLS GUC in real Postgres.
+    commit_index = call_order.index("db.commit")
+    webhook_query_index = call_order.index("db.execute:webhooks")
+    assert commit_index < webhook_query_index
+
+    # set_rls_context must be re-asserted strictly between that commit and the
+    # webhook query -- this is exactly the fix for the bug.
+    reasserted_between = any(
+        event == "set_rls_context" and commit_index < i < webhook_query_index
+        for i, event in enumerate(call_order)
+    )
+    assert reasserted_between, (
+        "set_rls_context was not re-asserted after the Slack block's commit and "
+        "before the webhook fan-out's db.execute(select(Webhook)) lookup -- this "
+        "is the pre-existing bug found in the final whole-branch review."
     )
     assert mock_set_rls_context.await_count >= 1
