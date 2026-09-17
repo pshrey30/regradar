@@ -17,7 +17,7 @@ triage_agent.py's spot_check_classification established.
 import json
 import logging
 
-from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
+from openai import OpenAI
 
 from regradar.agents.state import OrgProfileSnapshot, PipelineState, RelevanceResult
 from regradar.agents.triage_agent import SEVERITY_ORDER
