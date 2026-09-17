@@ -901,3 +901,87 @@ async def test_deliver_node_role_fanout_email_uses_role_email_recipient() -> Non
 
     mock_send_email.assert_awaited_once()
     assert mock_send_email.call_args.kwargs["recipient"] == "analyst-team@example.com"
+
+
+@pytest.mark.asyncio
+async def test_deliver_node_reasserts_rls_context_before_role_fanout_lookup() -> None:
+    """Regression test for the Critical bug found in Task 11 live verification:
+    _record_delivery commits after every channel, and Postgres' set_config(...,
+    true) is transaction-scoped, so any earlier commit (e.g. the org-wide Slack
+    block above the role fan-out) silently reverts app.current_role before the
+    role fan-out's db.get(OrganizationRoleDeliverySettings, ...) lookup runs.
+    Without a fresh set_rls_context(db, role="service") call right before the
+    role loop, that lookup returns None for a real, correctly-configured row.
+    This asserts the re-assertion happens, in the right order relative to the
+    earlier org-wide delivery's commit and the role-settings lookup.
+    """
+    filing_id = uuid.uuid4()
+    filing = _make_filing(filing_id)
+    state = _make_state(risk_level=RiskLevel.HIGH)
+    state = state.model_copy(
+        update={
+            "domain": FilingDomain.ENGINEERING,
+            "relevance": RelevanceResult(
+                relevance_score=0.9,
+                matched_signals={},
+                rationale="Matches your product line.",
+                recommended_action="Investigate.",
+            ),
+        }
+    )
+    org_wide_settings = _make_delivery_settings(_SLACK_URL)
+    role_settings = _make_role_settings(slack_webhook_url="https://hooks.slack.com/services/ROLE")
+    db = _make_db_with_role_settings(
+        filing,
+        existing_deliveries=[],
+        webhooks=[],
+        delivery_settings=org_wide_settings,
+        role_settings=role_settings,
+    )
+
+    call_order: list[str] = []
+    original_db_get = db.get
+
+    async def _tracking_get(model, pk):
+        result = await original_db_get(model, pk)
+        if model is OrganizationRoleDeliverySettings:
+            call_order.append("db.get:role_settings")
+        return result
+
+    db.get = AsyncMock(side_effect=_tracking_get)
+    db.commit = AsyncMock(side_effect=lambda: call_order.append("db.commit"))
+
+    async def _tracking_set_rls_context(*args, **kwargs):
+        call_order.append("set_rls_context")
+
+    with (
+        patch(
+            "regradar.agents.delivery_agent.send_slack_alert",
+            new=AsyncMock(return_value=DeliveryResult(status=DeliveryStatus.SENT, response_code=200)),
+        ),
+        patch(
+            "regradar.agents.delivery_agent.set_rls_context",
+            new=AsyncMock(side_effect=_tracking_set_rls_context),
+        ) as mock_set_rls_context,
+    ):
+        await deliver_node(state, config={"configurable": {"db": db}})
+
+    # The org-wide Slack block commits (via _record_delivery) before the role
+    # fan-out's lookup even starts — that earlier commit is what silently
+    # reverts the RLS GUC in real Postgres.
+    commit_index = call_order.index("db.commit")
+    role_lookup_index = call_order.index("db.get:role_settings")
+    assert commit_index < role_lookup_index
+
+    # set_rls_context must be re-asserted strictly between that commit and the
+    # role-settings lookup — this is exactly the fix for the bug.
+    reasserted_between = any(
+        event == "set_rls_context" and commit_index < i < role_lookup_index
+        for i, event in enumerate(call_order)
+    )
+    assert reasserted_between, (
+        "set_rls_context was not re-asserted after the org-wide delivery's commit "
+        "and before the role fan-out's db.get(OrganizationRoleDeliverySettings) lookup "
+        "-- this is the exact bug found in Task 11 live verification."
+    )
+    assert mock_set_rls_context.await_count >= 1

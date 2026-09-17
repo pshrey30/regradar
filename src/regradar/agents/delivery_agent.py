@@ -389,6 +389,14 @@ async def deliver_node(state: PipelineState, config: RunnableConfig) -> Pipeline
         if state.relevance is None or state.risk_level is None
         else compute_priority_score(state.risk_level, state.relevance.relevance_score)
     )
+    # Re-assert RLS context before the fan-out reads below — see the comment
+    # above _record_delivery: any of the Slack/Email/Webhook blocks above may
+    # have already committed at least once, and each commit ends the
+    # transaction that set_config(..., true) scoped `app.current_role` to.
+    # Without this, db.get(OrganizationRoleDeliverySettings, ...) silently
+    # returns None for a real, correctly-configured row because its
+    # service-only RLS policy no longer sees the reverted GUC.
+    await set_rls_context(db, role="service")
     for role in roles_for_domain(state.domain):
         role_settings = await db.get(OrganizationRoleDeliverySettings, (filing.organization_id, role))
         if role_settings is None or state.relevance is None:
