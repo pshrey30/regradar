@@ -9,7 +9,14 @@ import json
 import uuid
 from unittest.mock import MagicMock, patch
 
-from regradar.agents.relevance_agent import compute_priority_score, relevance_node
+import pytest
+
+from regradar.agents.relevance_agent import (
+    RelevanceError,
+    _validate_relevance,
+    compute_priority_score,
+    relevance_node,
+)
 from regradar.agents.state import ExtractionResult, OrgProfileSnapshot, PipelineState
 from regradar.llm_routing.tiered_router import ModelChoice
 from regradar.models.enums import FilingDomain, RiskLevel
@@ -135,6 +142,36 @@ def test_relevance_node_handles_missing_org_profile() -> None:
     ):
         result = relevance_node(state)
     assert result.relevance is not None
+
+
+def test_validate_relevance_rejects_out_of_range_score() -> None:
+    out_of_range = dict(VALID_RELEVANCE_JSON, relevance_score=8.0)
+    with pytest.raises(RelevanceError, match="between 0.0 and 1.0"):
+        _validate_relevance(out_of_range)
+
+
+def test_validate_relevance_accepts_boundary_scores() -> None:
+    _validate_relevance(dict(VALID_RELEVANCE_JSON, relevance_score=0.0))
+    _validate_relevance(dict(VALID_RELEVANCE_JSON, relevance_score=1.0))
+
+
+def test_relevance_node_falls_back_to_neutral_default_when_score_out_of_range_twice() -> None:
+    out_of_range_content = json.dumps(dict(VALID_RELEVANCE_JSON, relevance_score=8.0))
+    client = MagicMock()
+    response = MagicMock()
+    response.choices = [MagicMock(message=MagicMock(content=out_of_range_content))]
+    client.chat.completions.create.return_value = response
+
+    with patch(
+        "regradar.agents.relevance_agent._get_llm_client",
+        return_value=(client, "llama3.1", _fake_model_choice()),
+    ):
+        result = relevance_node(_make_state_with_extraction())
+
+    assert result.relevance is not None
+    assert result.relevance.relevance_score == 0.5
+    assert result.relevance.matched_signals == {}
+    assert client.chat.completions.create.call_count == 2
 
 
 def test_compute_priority_score_weights_severity_and_relevance_equally() -> None:

@@ -44,8 +44,10 @@ RELEVANCE_SYSTEM_PROMPT = (
     "organization's business profile and a filing's extracted obligations, risk "
     "flags, affected products, key entities, and competitor mentions, assess how "
     "relevant and impactful this filing is to THIS organization specifically — not "
-    "how severe the filing is in general. Respond with strict JSON only, matching "
-    "the required schema exactly."
+    "how severe the filing is in general. relevance_score MUST be a number between "
+    "0.0 and 1.0 inclusive, where 0.0 means completely irrelevant and 1.0 means "
+    "maximally relevant and impactful — never use a 0-10 or 0-100 scale. Respond "
+    "with strict JSON only, matching the required schema exactly."
 )
 
 RELEVANCE_RETRY_SUFFIX = (
@@ -138,6 +140,11 @@ def _validate_relevance(parsed: dict) -> None:
                 raise RelevanceError(f"Missing required field: {key}")
         if not isinstance(parsed["relevance_score"], (int, float)):
             raise RelevanceError(f"relevance_score must be numeric, got {parsed['relevance_score']!r}")
+        if not (0.0 <= parsed["relevance_score"] <= 1.0):
+            raise RelevanceError(
+                f"relevance_score must be between 0.0 and 1.0 inclusive, "
+                f"got {parsed['relevance_score']!r}"
+            )
         if not isinstance(parsed["matched_signals"], dict):
             raise RelevanceError("matched_signals must be an object")
         if not isinstance(parsed["rationale"], str) or not isinstance(parsed["recommended_action"], str):
