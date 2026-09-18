@@ -63,6 +63,7 @@ EXTRACTION_SCHEMA = {
                     "source_chunk_index": {"type": "integer"},
                 },
                 "required": ["description", "source_chunk_index"],
+                "additionalProperties": False,
             },
         },
         "deadlines": {
@@ -74,6 +75,7 @@ EXTRACTION_SCHEMA = {
                     "date": {"type": "string"},
                 },
                 "required": ["description", "date"],
+                "additionalProperties": False,
             },
         },
         "risk_flags": {"type": "array", "items": {"type": "string"}},
@@ -89,6 +91,7 @@ EXTRACTION_SCHEMA = {
         "key_entities",
         "competitor_mentions",
     ],
+    "additionalProperties": False,
 }
 
 
@@ -147,7 +150,7 @@ def _validate_extraction(parsed: dict, chunk_count: int) -> None:
     escape and crash the pipeline.
     """
     try:
-        for key in EXTRACTION_SCHEMA["required"]:
+        for key in cast(list, EXTRACTION_SCHEMA["required"]):
             if key not in parsed:
                 raise AnalysisError(f"Missing required field: {key}")
 

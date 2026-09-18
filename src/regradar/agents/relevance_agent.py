@@ -70,11 +70,13 @@ RELEVANCE_SCHEMA = {
                 "industry_alignment": {"type": "string"},
             },
             "required": ["watchlist_entities", "products", "industry_alignment"],
+            "additionalProperties": False,
         },
         "rationale": {"type": "string"},
         "recommended_action": {"type": "string"},
     },
     "required": ["relevance_score", "matched_signals", "rationale", "recommended_action"],
+    "additionalProperties": False,
 }
 
 
@@ -144,7 +146,7 @@ def _call_relevance_model(client: OpenAI, model: str, prompt: str, strict_retry:
 
 def _validate_relevance(parsed: dict) -> None:
     try:
-        for key in RELEVANCE_SCHEMA["required"]:
+        for key in cast(list, RELEVANCE_SCHEMA["required"]):
             if key not in parsed:
                 raise RelevanceError(f"Missing required field: {key}")
         if not isinstance(parsed["relevance_score"], (int, float)):

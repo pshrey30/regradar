@@ -73,6 +73,7 @@ SUMMARIZATION_SCHEMA = {
         "analyst_summary": {"type": "string"},
     },
     "required": ["executive_brief", "cco_summary", "analyst_summary"],
+    "additionalProperties": False,
 }
 
 

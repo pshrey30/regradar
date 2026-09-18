@@ -12,7 +12,7 @@ import httpx
 from openai import APIConnectionError, InternalServerError
 
 from regradar.agents.state import ExtractionResult, PipelineState
-from regradar.agents.summarization_agent import summarize_node
+from regradar.agents.summarization_agent import SUMMARIZATION_SCHEMA, summarize_node
 from regradar.llm_routing.tiered_router import ModelChoice
 from regradar.models.enums import FilingDomain, RiskLevel
 
@@ -384,3 +384,23 @@ def test_summarize_node_gives_up_after_fallback_also_fails() -> None:
         result = summarize_node(_make_state_with_extraction())
 
     assert result.briefs is None
+
+
+def _assert_additional_properties_false_on_every_object(schema: dict) -> None:
+    """Groq's strict JSON-schema mode (the only provider mode gpt-oss-120b/20b
+    support) rejects the whole request with a 400 unless EVERY object node in
+    the schema tree — including the root — sets additionalProperties: false.
+    Caught only by a live Groq call during the ORG-11 provider migration,
+    since every other test here mocks the client entirely."""
+    if schema.get("type") == "object":
+        assert schema.get("additionalProperties") is False, (
+            f"object node missing additionalProperties: false: {schema}"
+        )
+    for value in schema.get("properties", {}).values():
+        _assert_additional_properties_false_on_every_object(value)
+    if "items" in schema:
+        _assert_additional_properties_false_on_every_object(schema["items"])
+
+
+def test_summarization_schema_sets_additional_properties_false_on_every_object() -> None:
+    _assert_additional_properties_false_on_every_object(SUMMARIZATION_SCHEMA)
