@@ -55,12 +55,28 @@ class Settings(BaseSettings):
     aws_secret_access_key: SecretStr = Field(alias="AWS_SECRET_ACCESS_KEY")
 
     # ── LLM providers ────────────────────────────────────────
+    # openai_api_key is still required by rag/embeddings.py (text-embedding-3-small,
+    # gated by use_local_embeddings, a separate toggle from use_local_llm) —
+    # chat-completion calls no longer use it; see groq_api_key below.
     openai_api_key: SecretStr = Field(alias="OPENAI_API_KEY")
+    # huggingface_api_token still powers triage_agent.py's zero-shot domain
+    # classification (facebook/bart-large-mnli) — a separate, already-free
+    # HF endpoint intentionally left out of the Groq migration below.
     huggingface_api_token: SecretStr = Field(alias="HUGGINGFACE_API_TOKEN")
+    # Real (non-local) chat-completion provider for every LLM-calling agent:
+    # triage's spot-check, analysis, relevance, summarization, and Ask
+    # RegRadar's answer synthesis. Replaces the previously untested real-
+    # OpenAI/HF-chat-completions branch (see tiered_router.py) — Groq's
+    # OpenAI-compatible endpoint needs no new SDK.
+    groq_api_key: SecretStr = Field(alias="GROQ_API_KEY")
+    groq_base_url: str = Field(default="https://api.groq.com/openai/v1", alias="GROQ_BASE_URL")
 
     # ── Model routing tier thresholds ───────────────────────
-    tier_high_model: str = Field(default="gpt-4o", alias="TIER_HIGH_MODEL")
-    tier_low_model: str = Field(default="granite-13b", alias="TIER_LOW_MODEL")
+    # Groq's two structured-output-capable models (strict:true JSON schema
+    # mode is only supported on these two) — matches analysis_agent.py's
+    # and relevance_agent.py's existing strict schema requirement.
+    tier_high_model: str = Field(default="openai/gpt-oss-120b", alias="TIER_HIGH_MODEL")
+    tier_low_model: str = Field(default="openai/gpt-oss-20b", alias="TIER_LOW_MODEL")
     tier_routing_risk_threshold: RiskLevel = Field(
         default=RiskLevel.HIGH, alias="TIER_ROUTING_RISK_THRESHOLD"
     )

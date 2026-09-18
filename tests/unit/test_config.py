@@ -15,6 +15,7 @@ REQUIRED_ENV = {
     "AWS_SECRET_ACCESS_KEY": "test-aws-secret",
     "OPENAI_API_KEY": "sk-test",
     "HUGGINGFACE_API_TOKEN": "hf-test",
+    "GROQ_API_KEY": "gsk-test",
     "SEC_EDGAR_USER_AGENT": "RegRadar/1.0 (test@example.com)",
 }
 
@@ -34,8 +35,9 @@ def test_all_required_fields_present_loads_with_defaults(
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.env == "development"
-    assert settings.tier_high_model == "gpt-4o"
-    assert settings.tier_low_model == "granite-13b"
+    assert settings.tier_high_model == "openai/gpt-oss-120b"
+    assert settings.tier_low_model == "openai/gpt-oss-20b"
+    assert settings.groq_base_url == "https://api.groq.com/openai/v1"
     assert settings.database_pool_size == 10
     assert settings.api_rate_limit_per_minute_default == 60
     assert settings.use_local_llm is False

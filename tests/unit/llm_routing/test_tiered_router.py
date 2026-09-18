@@ -11,6 +11,7 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 os.environ.setdefault("HUGGINGFACE_API_TOKEN", "test-hf-token")
+os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
 os.environ.setdefault("SEC_EDGAR_USER_AGENT", "RegRadar/1.0 (test@example.com)")
 
 import pytest
@@ -87,24 +88,24 @@ def test_select_model_for_tier_local_mode_uses_local_models(
     assert low_choice.base_url == "http://localhost:11434/v1"
 
 
-def test_select_model_for_tier_real_mode_uses_openai_and_hf(
+def test_select_model_for_tier_real_mode_uses_groq(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("USE_LOCAL_LLM", "false")
-    monkeypatch.setenv("TIER_HIGH_MODEL", "gpt-4o")
-    monkeypatch.setenv("TIER_LOW_MODEL", "granite-13b")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai")
-    monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "hf-test-token")
+    monkeypatch.setenv("TIER_HIGH_MODEL", "openai/gpt-oss-120b")
+    monkeypatch.setenv("TIER_LOW_MODEL", "openai/gpt-oss-20b")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test-key")
+    monkeypatch.setenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
     high_choice = select_model_for_tier("high", task="analysis")
-    assert high_choice.model == "gpt-4o"
-    assert high_choice.base_url is None
-    assert high_choice.api_key.get_secret_value() == "sk-test-openai"
+    assert high_choice.model == "openai/gpt-oss-120b"
+    assert high_choice.base_url == "https://api.groq.com/openai/v1"
+    assert high_choice.api_key.get_secret_value() == "gsk-test-key"
 
     low_choice = select_model_for_tier("low", task="analysis")
-    assert low_choice.model == "granite-13b"
-    assert low_choice.base_url == "https://router.huggingface.co/v1"
-    assert low_choice.api_key.get_secret_value() == "hf-test-token"
+    assert low_choice.model == "openai/gpt-oss-20b"
+    assert low_choice.base_url == "https://api.groq.com/openai/v1"
+    assert low_choice.api_key.get_secret_value() == "gsk-test-key"
 
 
 def test_other_tier_choice_inverts_tier(monkeypatch: pytest.MonkeyPatch) -> None:

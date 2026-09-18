@@ -14,6 +14,7 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 os.environ.setdefault("HUGGINGFACE_API_TOKEN", "test-hf-token")
+os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
 os.environ.setdefault("SEC_EDGAR_USER_AGENT", "RegRadar/1.0 (test@example.com)")
 
 from unittest.mock import MagicMock

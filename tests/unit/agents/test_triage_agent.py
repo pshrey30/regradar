@@ -204,11 +204,12 @@ def test_get_llm_client_uses_local_settings_when_use_local_llm_true() -> None:
     assert model == "llama3.1"
 
 
-def test_get_llm_client_uses_real_openai_when_use_local_llm_false() -> None:
+def test_get_llm_client_uses_groq_when_use_local_llm_false() -> None:
     fake_settings = MagicMock()
     fake_settings.use_local_llm = False
-    fake_settings.tier_high_model = "gpt-4o"
-    fake_settings.openai_api_key.get_secret_value.return_value = "sk-real"
+    fake_settings.tier_high_model = "openai/gpt-oss-120b"
+    fake_settings.groq_base_url = "https://api.groq.com/openai/v1"
+    fake_settings.groq_api_key.get_secret_value.return_value = "gsk-real"
 
     with (
         patch("regradar.agents.triage_agent.get_settings", return_value=fake_settings),
@@ -216,8 +217,10 @@ def test_get_llm_client_uses_real_openai_when_use_local_llm_false() -> None:
     ):
         _client, model = _get_llm_client()
 
-    mock_openai_cls.assert_called_once_with(api_key="sk-real")
-    assert model == "gpt-4o"
+    mock_openai_cls.assert_called_once_with(
+        base_url="https://api.groq.com/openai/v1", api_key="gsk-real"
+    )
+    assert model == "openai/gpt-oss-120b"
 
 
 def _make_state() -> PipelineState:

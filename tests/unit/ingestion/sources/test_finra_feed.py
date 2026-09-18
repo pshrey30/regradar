@@ -70,6 +70,7 @@ def _settings_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "test")
+    monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "RegRadar/1.0 (test@example.com)")
     monkeypatch.setenv("FINRA_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("FINRA_CLIENT_SECRET", "test-client-secret")

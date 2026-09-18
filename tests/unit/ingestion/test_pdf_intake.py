@@ -26,6 +26,7 @@ def _settings_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "test")
+    monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "RegRadar/1.0 (test@example.com)")
     pdf_intake.get_settings.cache_clear()
     yield
