@@ -8,8 +8,10 @@ service-role-only ("no admin-facing API to manage this exists yet" — 0024's
 own docstring), but this migration is exactly that API. Replaces the
 single ALL/service policy with the same shape 0009/0010 already established
 for source_configs: SELECT for any authenticated role scoped to their own
-org, INSERT/UPDATE for Admin (scoped to their own org) or service. No
-DELETE policy — nothing in this app ever deletes a profile.
+org, or service (unscoped — service has no app.current_organization_id GUC
+set, matching source_configs_select in 0010); INSERT/UPDATE for Admin
+(scoped to their own org) or service. No DELETE policy — nothing in this
+app ever deletes a profile.
 
 Revision ID: 0027
 Revises: 0026
@@ -53,7 +55,7 @@ def upgrade() -> None:
     op.execute("DROP POLICY organization_profiles_service ON organization_profiles")
     op.execute(
         f"CREATE POLICY organization_profiles_select ON organization_profiles FOR SELECT "
-        f"USING ({_AUTHENTICATED} AND {_ORG_MATCH})"
+        f"USING (({_AUTHENTICATED} AND {_ORG_MATCH}) OR {_IS_SERVICE})"
     )
     write_check = f"(({_IS_ADMIN} AND {_ORG_MATCH}) OR {_IS_SERVICE})"
     op.execute(
