@@ -11,6 +11,7 @@ from regradar.api import deps as deps_module
 from regradar.api.main import create_app
 from regradar.api.middleware import rate_limit as rate_limit_module
 from regradar.models.enums import ApiKeyRole
+from regradar.models.organization_profile import OrganizationProfile
 
 
 def _authenticated_key_row(
@@ -142,3 +143,37 @@ def test_update_me_rejects_empty_display_name(monkeypatch: pytest.MonkeyPatch):
     )
 
     assert response.status_code == 422
+
+
+def test_get_me_reports_organization_setup_incomplete_when_no_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid.uuid4()
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN, owner_label="Jane", organization_id=org_id)
+    mock_db = _mock_route_db(monkeypatch)
+    mock_db.get = AsyncMock(return_value=None)
+
+    response = TestClient(create_app()).get("/v1/me", headers={"Authorization": "Bearer test"})
+
+    assert response.status_code == 200
+    assert response.json()["organization_setup_complete"] is False
+
+
+def test_get_me_reports_organization_setup_complete_when_profile_filled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid.uuid4()
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN, owner_label="Jane", organization_id=org_id)
+    mock_db = _mock_route_db(monkeypatch)
+    profile = MagicMock(spec=OrganizationProfile)
+    profile.industry = "Biotech"
+    profile.business_description = "We make devices."
+    profile.watchlist_entities = ["Acme"]
+    profile.products = ["Widget"]
+    profile.risk_priorities = ["Privacy"]
+    mock_db.get = AsyncMock(return_value=profile)
+
+    response = TestClient(create_app()).get("/v1/me", headers={"Authorization": "Bearer test"})
+
+    assert response.status_code == 200
+    assert response.json()["organization_setup_complete"] is True

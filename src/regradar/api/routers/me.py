@@ -19,19 +19,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from regradar.api.deps import AuthenticatedKey
 from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.models.api_key import ApiKey
+from regradar.models.organization_profile import OrganizationProfile, is_complete
 from regradar.schemas.me import MeResponse, UpdateProfileRequest
 
 router = APIRouter()
 
 
 @router.get("/v1/me", response_model=MeResponse)
-async def get_me(key: AuthenticatedKey = Depends(enforce_rate_limit)) -> MeResponse:
+async def get_me(
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> MeResponse:
+    profile = await db.get(OrganizationProfile, key.organization_id)
     return MeResponse(
         role=key.role,
         organization_id=str(key.organization_id),
         display_name=key.owner_label,
         email=key.email,
         has_password=key.has_password,
+        organization_setup_complete=is_complete(profile),
     )
 
 
@@ -45,10 +51,12 @@ async def update_me(
     assert row is not None  # the row that authenticated this request
     row.owner_label = body.display_name
     await db.commit()
+    profile = await db.get(OrganizationProfile, key.organization_id)
     return MeResponse(
         role=row.role,
         organization_id=str(row.organization_id),
         display_name=row.owner_label,
         email=row.email,
         has_password=row.password_hash is not None,
+        organization_setup_complete=is_complete(profile),
     )

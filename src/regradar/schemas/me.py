@@ -11,6 +11,7 @@ class MeResponse(BaseModel):
     display_name: str
     email: str | None = None
     has_password: bool = False
+    organization_setup_complete: bool = False
 
 
 class UpdateProfileRequest(BaseModel):
