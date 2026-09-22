@@ -29,6 +29,7 @@ from regradar.models.brief import Brief
 from regradar.models.enums import FilingDomain, FilingStatus, RiskLevel
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
+from regradar.models.organization_profile import OrganizationProfile
 from regradar.rag.chunking import Chunk
 from regradar.workers.pipeline_tasks import (
     _mark_filing_failed,
@@ -37,6 +38,17 @@ from regradar.workers.pipeline_tasks import (
     process_filing,
     process_pending_filings,
 )
+
+
+def _complete_profile_row(organization_id: uuid.UUID) -> MagicMock:
+    row = MagicMock(spec=OrganizationProfile)
+    row.organization_id = organization_id
+    row.industry = "Biotechnology"
+    row.business_description = "We manufacture diagnostic devices."
+    row.watchlist_entities = ["Acme Corp"]
+    row.products = ["Widget Pro"]
+    row.risk_priorities = ["Data privacy"]
+    return row
 
 
 def test_enqueue_filing_processing_calls_delay_with_str_id() -> None:
@@ -54,8 +66,9 @@ def test_process_filing_persists_classification_on_success(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -108,8 +121,9 @@ def test_process_filing_reasserts_rls_role_after_graph_invoke(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -163,8 +177,9 @@ def test_process_filing_clears_stale_processing_error_on_new_run(
     filing.raw_pdf_s3_key = None
     filing.processing_error = "old error from a previous failed attempt"
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -207,8 +222,9 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -252,8 +268,9 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
     filing.id = filing_id
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -318,8 +335,9 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
     filing.id = filing_id
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -371,8 +389,9 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -420,8 +439,9 @@ def test_process_filing_persists_extraction_on_success(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -490,8 +510,9 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
     filing.id = filing_id
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -563,8 +584,9 @@ def test_process_filing_marks_complete_when_delivery_ran(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -638,8 +660,9 @@ def test_process_filing_stays_classifying_when_delivery_ran_but_nothing_sent(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -704,8 +727,9 @@ def test_process_filing_stays_classifying_when_delivery_status_none(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -765,8 +789,9 @@ def test_process_filing_marks_needs_review_when_summarization_fails(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -824,8 +849,9 @@ def test_process_filing_continues_when_embed_chunks_raises(
     filing.id = filing_id
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -918,8 +944,9 @@ def test_process_filing_continues_when_brief_commit_raises(
     filing.id = filing_id
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     # The first commit (filing status) and second commit (Extraction) succeed;
     # the third commit (Brief) raises — isolating the failure to Brief
     # persistence specifically, mirroring the embed_chunks-failure test above.
@@ -1019,8 +1046,9 @@ def test_process_filing_calls_chunk_filing_before_graph_invoke(
     filing.id = filing_id
     filing.raw_pdf_s3_key = "filings/abc123.pdf"
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
     mock_db.add = MagicMock()
 
@@ -1265,7 +1293,6 @@ async def test_process_pending_filings_continues_after_one_failure(
 
 
 from regradar.agents.state import RelevanceResult
-from regradar.models.organization_profile import OrganizationProfile
 
 
 def test_process_filing_loads_org_profile_before_building_state(
@@ -1336,8 +1363,9 @@ def test_process_filing_persists_priority_score_and_relevance_fields(
     filing.organization_id = uuid.uuid4()
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -1390,8 +1418,9 @@ def test_process_filing_leaves_relevance_fields_unset_when_unclassified(
     filing.raw_pdf_s3_key = None
     filing.priority_score = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
@@ -1424,3 +1453,80 @@ def test_process_filing_leaves_relevance_fields_unset_when_unclassified(
 
     assert filing.priority_score is None
     assert filing.status == FilingStatus.NEEDS_CLASSIFICATION
+
+
+def test_process_filing_parks_filing_needing_organization_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No OrganizationProfile row at all for this filing's org — the
+    pipeline must never run (zero LLM spend), and the filing is parked at
+    NEEDS_ORGANIZATION_SETUP instead."""
+    filing_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.organization_id = org_id
+    filing.raw_pdf_s3_key = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(
+        side_effect=lambda model, *args, **kwargs: filing if model is Filing else None
+    )
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+    build_graph_mock = MagicMock()
+    monkeypatch.setattr(pipeline_tasks_module, "build_graph", build_graph_mock)
+
+    process_filing.run(str(filing_id))
+
+    assert filing.status == FilingStatus.NEEDS_ORGANIZATION_SETUP
+    mock_db.commit.assert_awaited_once()
+    build_graph_mock.assert_not_called()
+
+
+def test_process_filing_parks_filing_with_incomplete_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A profile row exists but is missing required fields — still gated,
+    same as no row at all."""
+    filing_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.organization_id = org_id
+    filing.raw_pdf_s3_key = None
+
+    incomplete_profile = _complete_profile_row(org_id)
+    incomplete_profile.watchlist_entities = []  # the one field that's missing
+
+    mock_db = AsyncMock()
+
+    def _get(model, *args, **kwargs):
+        if model is Filing:
+            return filing
+        return incomplete_profile
+
+    mock_db.get = AsyncMock(side_effect=_get)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+    build_graph_mock = MagicMock()
+    monkeypatch.setattr(pipeline_tasks_module, "build_graph", build_graph_mock)
+
+    process_filing.run(str(filing_id))
+
+    assert filing.status == FilingStatus.NEEDS_ORGANIZATION_SETUP
+    build_graph_mock.assert_not_called()

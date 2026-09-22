@@ -22,7 +22,7 @@ from regradar.models.brief import Brief
 from regradar.models.enums import FilingStatus
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
-from regradar.models.organization_profile import OrganizationProfile
+from regradar.models.organization_profile import OrganizationProfile, is_complete
 from regradar.rag.chunking import chunk_filing
 from regradar.rag.embeddings import embed_chunks
 from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_document_bytes
@@ -53,6 +53,12 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             logger.warning("Filing %s not found — skipping pipeline run", filing_id)
             return
 
+        profile_row = await db.get(OrganizationProfile, filing.organization_id)
+        if not is_complete(profile_row):
+            filing.status = FilingStatus.NEEDS_ORGANIZATION_SETUP
+            await db.commit()
+            return
+
         raw_text = ""
         chunks: list = []
         if filing.raw_pdf_s3_key:
@@ -64,17 +70,17 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             except Exception as exc:  # noqa: BLE001 — never crash the pipeline over a bad/missing PDF
                 logger.warning("PDF extraction failed for filing %s: %s", filing_id, exc)
 
-        profile_row = await db.get(OrganizationProfile, filing.organization_id)
-        org_profile = (
-            OrgProfileSnapshot(
-                industry=profile_row.industry,
-                business_description=profile_row.business_description,
-                watchlist_entities=list(profile_row.watchlist_entities),
-                products=list(profile_row.products),
-                risk_priorities=list(profile_row.risk_priorities),
-            )
-            if profile_row is not None
-            else None
+        # profile_row is guaranteed complete here (is_complete() above
+        # already confirmed it) — no `if profile_row is not None else
+        # None` branch needed, unlike before this gate existed. The assert
+        # is for mypy's benefit only (is_complete() isn't a TypeGuard).
+        assert profile_row is not None
+        org_profile = OrgProfileSnapshot(
+            industry=profile_row.industry,
+            business_description=profile_row.business_description,
+            watchlist_entities=list(profile_row.watchlist_entities),
+            products=list(profile_row.products),
+            risk_priorities=list(profile_row.risk_priorities),
         )
 
         state = PipelineState(
