@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ReactNode } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
 import { AppShell } from './components/AppShell'
 import { AuthProvider } from './auth/AuthContext'
@@ -10,6 +10,7 @@ import { FilingDetail } from './pages/FilingDetail'
 import { FilingsList } from './pages/FilingsList'
 import { Login } from './pages/Login'
 import { Metrics } from './pages/Metrics'
+import { Onboarding } from './pages/Onboarding'
 import { Profile } from './pages/Profile'
 import { Search } from './pages/Search'
 import { SourceConfig } from './pages/SourceConfig'
@@ -27,13 +28,17 @@ const Landing = lazy(() => import('./pages/Landing').then((m) => ({ default: m.L
 // ever mount — belt-and-suspenders on top of the backend's own 403, since
 // nav-hiding alone still let a typed-in URL reach the full page shell.
 function ProtectedRoute({ children, navItem }: { children: ReactNode; navItem?: NavItem }) {
-  const { status, role } = useAuth()
+  const { status, role, organizationSetupComplete } = useAuth()
+  const location = useLocation()
 
   if (status === 'loading') {
     return <div className="flex min-h-screen items-center justify-center text-slate-500">Loading…</div>
   }
   if (status === 'unauthenticated') {
     return <Navigate to="/login" replace />
+  }
+  if (!organizationSetupComplete && location.pathname !== '/onboarding') {
+    return <Navigate to="/onboarding" replace />
   }
   if (navItem && !canSeeNavItem(role, navItem)) {
     return <Navigate to="/filings" replace />
@@ -144,6 +149,14 @@ function App() {
           element={
             <ProtectedRoute navItem="users">
               <Users />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/onboarding"
+          element={
+            <ProtectedRoute>
+              <Onboarding />
             </ProtectedRoute>
           }
         />

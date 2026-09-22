@@ -8,6 +8,7 @@ interface MeResponse {
   role: Role
   organization_id: string | null
   display_name: string
+  organization_setup_complete: boolean
 }
 
 export interface AuthState {
@@ -15,6 +16,7 @@ export interface AuthState {
   role: Role | null
   organizationId: string | null
   displayName: string | null
+  organizationSetupComplete: boolean
 }
 
 export const AuthContext = createContext<AuthState | null>(null)
@@ -24,6 +26,7 @@ const _INITIAL_STATE: AuthState = {
   role: null,
   organizationId: null,
   displayName: null,
+  organizationSetupComplete: true,
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -37,6 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           role: me.role,
           organizationId: me.organization_id,
           displayName: me.display_name,
+          organizationSetupComplete: me.organization_setup_complete,
         }),
       )
       .catch((err) => {
