@@ -22,7 +22,7 @@ const _ERROR_MESSAGES: Record<string, string> = {
   google_disabled: 'Google sign-in is temporarily unavailable — please use email and password.',
 }
 
-type Mode = 'login' | 'signup'
+type Mode = 'login' | 'signup' | 'signup-org'
 
 // Every role a signing-up person may choose for themselves — Admin is
 // deliberately absent. An Admin account is only ever granted by another
@@ -46,6 +46,7 @@ export function Login() {
   const [showPassword, setShowPassword] = useState(false)
   const [displayName, setDisplayName] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  const [orgName, setOrgName] = useState('')
   const [role, setRole] = useState<(typeof SELF_SELECTABLE_ROLES)[number]['value']>('analyst')
   const [formError, setFormError] = useState<string | null>(null)
   const [signupSuccess, setSignupSuccess] = useState(false)
@@ -55,7 +56,7 @@ export function Login() {
     event.preventDefault()
     setFormError(null)
     setSignupSuccess(false)
-    if (mode === 'signup' && password !== confirmPassword) {
+    if ((mode === 'signup' || mode === 'signup-org') && password !== confirmPassword) {
       setFormError("Passwords don't match.")
       return
     }
@@ -72,6 +73,26 @@ export function Login() {
         // /v1/me re-run and pick it up, matching how the Google flow's
         // own redirect-back-to-frontend already forces a fresh load.
         window.location.href = '/filings'
+        return
+      }
+
+      if (mode === 'signup-org') {
+        await apiFetch('/v1/auth/signup-org', {
+          method: 'POST',
+          body: JSON.stringify({
+            org_name: orgName,
+            display_name: displayName,
+            email,
+            password,
+          }),
+          skipAuthRedirect: true,
+        })
+        setMode('login')
+        setSignupSuccess(true)
+        setPassword('')
+        setConfirmPassword('')
+        setDisplayName('')
+        setOrgName('')
         return
       }
 
@@ -121,7 +142,7 @@ export function Login() {
         <Card className="w-full">
           <div className="mb-6 text-center">
             <h1 className="mb-1 text-xl font-semibold text-slate-900">
-              {mode === 'login' ? 'Welcome back' : 'Create your account'}
+              {mode === 'login' ? 'Welcome back' : mode === 'signup-org' ? 'Create your organization' : 'Create your account'}
             </h1>
             <p className="text-sm text-slate-500">Regulatory filing intelligence</p>
           </div>
@@ -173,6 +194,24 @@ export function Login() {
               />
             </>
           )}
+          {mode === 'signup-org' && (
+            <>
+              <Input
+                label="Organization name"
+                required
+                value={orgName}
+                onChange={(e) => setOrgName(e.target.value)}
+                placeholder="Acme Corp"
+              />
+              <Input
+                label="Your name"
+                required
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Jane Admin"
+              />
+            </>
+          )}
           <Input
             label="Email"
             type="email"
@@ -186,10 +225,10 @@ export function Login() {
               label="Password"
               type={showPassword ? 'text' : 'password'}
               required
-              minLength={mode === 'signup' ? 8 : undefined}
+              minLength={mode !== 'login' ? 8 : undefined}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={mode === 'signup' ? 'At least 8 characters' : undefined}
+              placeholder={mode !== 'login' ? 'At least 8 characters' : undefined}
               className="pr-14"
             />
             <button
@@ -200,7 +239,7 @@ export function Login() {
               {showPassword ? 'Hide' : 'Show'}
             </button>
           </div>
-          {mode === 'signup' && (
+          {mode !== 'login' && (
             <Input
               label="Confirm password"
               type={showPassword ? 'text' : 'password'}
@@ -213,25 +252,55 @@ export function Login() {
           )}
           {formError && <p className="text-sm text-risk-critical">{formError}</p>}
           <Button type="submit" variant="primary" size="lg" className="w-full" loading={submitting}>
-            {mode === 'login' ? 'Sign in' : 'Create account'}
+            {mode === 'login' ? 'Sign in' : mode === 'signup-org' ? 'Create organization' : 'Create account'}
           </Button>
         </form>
 
         <p className="mt-4 text-center text-sm text-slate-500">
-          {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
-          <button
-            type="button"
-            className="font-medium text-primary-600 hover:underline"
-            onClick={() => {
-              setMode(mode === 'login' ? 'signup' : 'login')
-              setFormError(null)
-              setSignupSuccess(false)
-              setConfirmPassword('')
-              setInviteCode('')
-            }}
-          >
-            {mode === 'login' ? 'Sign up' : 'Sign in'}
-          </button>
+          {mode === 'login' ? (
+            <>
+              Have an invite code?{' '}
+              <button
+                type="button"
+                className="font-medium text-primary-600 hover:underline"
+                onClick={() => {
+                  setMode('signup')
+                  setFormError(null)
+                  setSignupSuccess(false)
+                }}
+              >
+                Sign up
+              </button>
+              {' · '}
+              New here?{' '}
+              <button
+                type="button"
+                className="font-medium text-primary-600 hover:underline"
+                onClick={() => {
+                  setMode('signup-org')
+                  setFormError(null)
+                  setSignupSuccess(false)
+                }}
+              >
+                Create an organization
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="font-medium text-primary-600 hover:underline"
+              onClick={() => {
+                setMode('login')
+                setFormError(null)
+                setSignupSuccess(false)
+                setConfirmPassword('')
+                setInviteCode('')
+                setOrgName('')
+              }}
+            >
+              Sign in
+            </button>
+          )}
         </p>
         </Card>
       </div>
