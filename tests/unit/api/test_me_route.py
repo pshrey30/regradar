@@ -91,6 +91,8 @@ def test_me_returns_role_and_display_name_for_every_role(
 ):
     org_id = uuid.uuid4()
     _mock_auth_and_rate_limit(monkeypatch, role=role, owner_label="acme-corp-key", organization_id=org_id)
+    mock_db = _mock_route_db(monkeypatch)
+    mock_db.get = AsyncMock(return_value=None)
 
     response = TestClient(create_app()).get(
         "/v1/me", headers={"Authorization": "Bearer rr_test-key"}
