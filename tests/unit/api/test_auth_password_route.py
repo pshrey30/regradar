@@ -25,8 +25,10 @@ import pytest
 from regradar.api.errors import ApiError
 from regradar.api.routers import auth as auth_module
 from regradar.core.passwords import hash_password
+from regradar.models.api_key import ApiKey
 from regradar.models.enums import ApiKeyRole
-from regradar.schemas.auth import LoginRequest, SignupRequest
+from regradar.models.organization import Organization
+from regradar.schemas.auth import LoginRequest, SignupOrgRequest, SignupRequest
 
 _VALID_SIGNUP_KWARGS = {"invite_code": "rrinv_test-code", "role": ApiKeyRole.ANALYST}
 
@@ -299,3 +301,98 @@ async def test_login_resets_failure_count_on_success(
     await auth_module.login(LoginRequest(email="user@example.com", password="correct-password"))
 
     _mock_redis.delete.assert_awaited_once()
+
+
+def _patch_signup_org_db(
+    monkeypatch: pytest.MonkeyPatch, *, existing_email_row=None
+):
+    """Sequences signup_org()'s one query (email-uniqueness check) — no
+    invite consumption, no org lookup (a NEW org is created, never
+    looked up)."""
+    mock_db = AsyncMock()
+
+    email_result = MagicMock()
+    email_result.scalar_one_or_none = MagicMock(return_value=existing_email_row)
+    mock_db.execute = AsyncMock(return_value=email_result)
+    mock_db.add = MagicMock()
+    mock_db.flush = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(auth_module, "get_session_factory", lambda: mock_session_factory)
+    return mock_db
+
+
+@pytest.mark.asyncio
+async def test_signup_org_creates_organization_and_admin_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_db = _patch_signup_org_db(monkeypatch)
+
+    response = await auth_module.signup_org(
+        SignupOrgRequest(
+            org_name="Acme Corp",
+            display_name="Jane Admin",
+            email="jane@acme.example",
+            password="correct horse battery staple",
+        )
+    )
+
+    assert response.status_code == 201
+    added_rows = [call.args[0] for call in mock_db.add.call_args_list]
+    orgs = [row for row in added_rows if isinstance(row, Organization)]
+    keys = [row for row in added_rows if isinstance(row, ApiKey)]
+    assert len(orgs) == 1
+    assert orgs[0].name == "Acme Corp"
+    assert len(keys) == 1
+    assert keys[0].role == ApiKeyRole.ADMIN
+    assert keys[0].email == "jane@acme.example"
+    assert keys[0].owner_label == "Jane Admin"
+    mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_signup_org_rejects_duplicate_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    existing = MagicMock()
+    _patch_signup_org_db(monkeypatch, existing_email_row=existing)
+
+    with pytest.raises(ApiError) as exc_info:
+        await auth_module.signup_org(
+            SignupOrgRequest(
+                org_name="Acme Corp",
+                display_name="Jane Admin",
+                email="jane@acme.example",
+                password="correct horse battery staple",
+            )
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "email_taken"
+
+
+@pytest.mark.asyncio
+async def test_signup_org_rejects_weak_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_signup_org_db(monkeypatch)
+
+    with pytest.raises(ApiError) as exc_info:
+        await auth_module.signup_org(
+            SignupOrgRequest(
+                org_name="Acme Corp",
+                display_name="Jane Admin",
+                email="jane@acme.example",
+                password="weak",
+            )
+        )
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "weak_password"
+
+
+def test_signup_org_request_rejects_empty_org_name() -> None:
+    with pytest.raises(ValueError):
+        SignupOrgRequest(
+            org_name="",
+            display_name="Jane Admin",
+            email="jane@acme.example",
+            password="correct horse battery staple",
+        )

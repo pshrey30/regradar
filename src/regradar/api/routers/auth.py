@@ -26,7 +26,9 @@ the OAuth round-trip in a second short-lived cookie, mirroring how
 gate — it carries no role. The person signing up chooses their own role,
 but only from schemas.auth.SELF_SELECTABLE_ROLES, which excludes Admin;
 an actual Admin account is only ever created by another Admin directly
-(`create-api-key`), never through self-service signup. An invite is only
+(`create-api-key`), never through self-service signup, or through
+`POST /v1/auth/signup-org`, which creates a brand-new organization with
+no invite at all. An invite is only
 ever consumed when it actually creates a NEW account — a returning
 Google user logging back in via an existing row never touches the invite
 system at all.
@@ -80,6 +82,7 @@ from regradar.schemas.auth import (
     SELF_SELECTABLE_ROLES,
     ChangePasswordRequest,
     LoginRequest,
+    SignupOrgRequest,
     SignupRequest,
 )
 
@@ -432,6 +435,54 @@ async def signup(payload: SignupRequest) -> Response:
             # nothing is ever meant to authenticate with this particular
             # value — login() rotates it to a real session token on the
             # first actual sign-in, same as every other login already does.
+            key_hash=hash_api_key(generate_api_key()),
+        )
+        db.add(key)
+        await db.commit()
+
+    return JSONResponse(status_code=201, content={"status": "ok"})
+
+
+@router.post("/v1/auth/signup-org", status_code=201)
+async def signup_org(payload: SignupOrgRequest) -> Response:
+    """The self-serve counterpart to signup(): creates a brand-new
+    Organization and its first Admin account together, in one
+    transaction, with no invite consumed or required. An invite only
+    ever grants a non-Admin role into an EXISTING org (SELF_SELECTABLE_ROLES
+    excludes Admin entirely) — this is the entry point that invites don't
+    cover: becoming the Admin of a NEW org. Deliberately does not
+    establish a session, matching signup()'s own "create only, then log
+    in separately" convention.
+    """
+    try:
+        password_hash = hash_password(payload.password)
+    except WeakPasswordError as exc:
+        raise ApiError(status_code=422, code="weak_password", message=str(exc)) from exc
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        await set_rls_context(db, role="service")
+        existing = await db.execute(select(ApiKey.id).where(ApiKey.email == payload.email))
+        if existing.scalar_one_or_none() is not None:
+            raise ApiError(
+                status_code=409,
+                code="email_taken",
+                message="An account with this email already exists.",
+            )
+
+        organization = Organization(name=payload.org_name)
+        db.add(organization)
+        await db.flush()  # populates organization.id before the ApiKey below needs it as a FK
+
+        key = ApiKey(
+            organization_id=organization.id,
+            owner_label=payload.display_name,
+            role=ApiKeyRole.ADMIN,
+            email=payload.email,
+            password_hash=password_hash,
+            # Same "never meant to authenticate with this value" pattern
+            # signup() already uses — login() rotates it to a real session
+            # token on the first actual sign-in.
             key_hash=hash_api_key(generate_api_key()),
         )
         db.add(key)
