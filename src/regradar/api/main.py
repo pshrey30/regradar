@@ -17,6 +17,7 @@ from regradar.api.routers.filings import router as filings_router
 from regradar.api.routers.invites import router as invites_router
 from regradar.api.routers.me import router as me_router
 from regradar.api.routers.metrics import router as metrics_router
+from regradar.api.routers.organizations import router as organizations_router
 from regradar.api.routers.webhooks import router as webhooks_router
 from regradar.api.routers.whoami import router as whoami_router
 from regradar.core.config import get_settings
@@ -69,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(api_keys_router)
     app.include_router(invites_router)
     app.include_router(activity_router)
+    app.include_router(organizations_router)
 
     @app.get("/health")
     async def health(response: Response) -> dict[str, str]:
