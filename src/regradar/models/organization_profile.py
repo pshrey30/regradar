@@ -31,3 +31,19 @@ class OrganizationProfile(Base):
     products: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     risk_priorities: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+def is_complete(profile: "OrganizationProfile | None") -> bool:
+    """Whether every field this project requires at onboarding is
+    actually populated — the single predicate the onboarding-redirect
+    check (API-11), the pipeline gate (API-11), and /v1/me (API-11) all
+    share, so they can't silently drift apart on what "complete" means."""
+    if profile is None:
+        return False
+    return bool(
+        profile.industry
+        and profile.business_description
+        and profile.watchlist_entities
+        and profile.products
+        and profile.risk_priorities
+    )
