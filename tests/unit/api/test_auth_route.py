@@ -59,29 +59,47 @@ def _patch_db(
     found_row=None,
     invite_valid: bool = True,
     org_id=None,
+    stale_org_lookup_id=None,
 ):
     """Sequences queries in the order the real code issues them for a
     Google-identity lookup: the sso-identity SELECT, then — only when
     that comes back empty (a first-time signup) — the invite-consuming
-    UPDATE...RETURNING, then — only if that invite was valid — the org
-    lookup. A returning user (found_row is not None) never reaches the
-    invite/org queries at all, matching _find_or_create_api_key's real
-    control flow."""
+    UPDATE...RETURNING, which now returns the invite's own
+    organization_id directly (there is no separate org lookup any more —
+    _find_or_create_api_key joins whichever org the invite itself
+    belongs to). A returning user (found_row is not None) never reaches
+    the invite query at all, matching _find_or_create_api_key's real
+    control flow.
+
+    `stale_org_lookup_id`, when given, queues a THIRD mock result behind
+    the two real ones, standing in for the old "first-created org"
+    `select(Organization.id).order_by(...).limit(1)` query this task
+    removed from _find_or_create_api_key. That function never issues a
+    third query any more, so this item is normally never consumed — it's
+    a regression trap: if that old lookup were ever reintroduced, it
+    would consume this slot and get `stale_org_lookup_id` back, which a
+    caller can then assert did NOT end up on the created row (see
+    test_find_or_create_joins_the_invites_own_org_not_a_different_org)."""
     mock_db = AsyncMock()
 
     key_result = MagicMock()
     key_result.scalar_one_or_none = MagicMock(return_value=found_row)
     invite_result = MagicMock()
-    invite_result.scalar_one_or_none = MagicMock(return_value=uuid4() if invite_valid else None)
-    org_result = MagicMock()
-    org_result.scalar_one = MagicMock(return_value=org_id or uuid4())
+    invite_result.scalar_one_or_none = MagicMock(
+        return_value=(org_id or uuid4()) if invite_valid else None
+    )
+    stale_org_result = MagicMock()
+    stale_org_result.scalar_one = MagicMock(return_value=stale_org_lookup_id)
+    stale_org_result.scalar_one_or_none = MagicMock(return_value=stale_org_lookup_id)
 
     if found_row is not None:
         queue = [key_result]
     elif not invite_valid:
         queue = [key_result, invite_result]
+    elif stale_org_lookup_id is not None:
+        queue = [key_result, invite_result, stale_org_result]
     else:
-        queue = [key_result, invite_result, org_result]
+        queue = [key_result, invite_result]
     real_results = iter(queue)
 
     async def _execute(stmt, *args, **kwargs):
@@ -290,6 +308,45 @@ async def test_find_or_create_creates_new_key_with_chosen_role_for_unknown_ident
     assert created.role == ApiKeyRole.EXECUTIVE
     assert created.sso_provider == "google"
     assert created.sso_subject_id == "google-sub-new"
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_joins_the_invites_own_org_not_a_different_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the cross-tenant bug this task fixes, mirroring
+    test_auth_password_route.py's email/password equivalent:
+    _find_or_create_api_key used to look up "the first-created org"
+    independently of which org's Admin actually issued the invite. Here
+    the invite's own org and some other ("first-created") org are
+    deliberately different UUIDs, and `stale_org_lookup_id` queues that
+    other org behind a THIRD mock query slot standing in for the old,
+    now-removed org lookup. _find_or_create_api_key itself never issues
+    that third query any more, so this test passes today because the
+    created row's org matches the invite's own org (`invites_org_id`) —
+    but if someone ever reintroduced the old lookup, it would consume
+    this third slot, get `some_other_org_id` back, and this test's
+    `!= some_other_org_id` assertion would then genuinely fail on a real
+    mismatch, not merely on an exhausted mock queue."""
+    invites_org_id = uuid4()
+    some_other_org_id = uuid4()
+    assert invites_org_id != some_other_org_id
+
+    mock_db = _patch_db(
+        monkeypatch, found_row=None, org_id=invites_org_id, stale_org_lookup_id=some_other_org_id
+    )
+    identity = GoogleIdentity(
+        subject_id="google-sub-new-org", email="new-org@example.com", email_verified=True, name="New Org Person"
+    )
+
+    await auth_module._find_or_create_api_key(
+        identity, invite_code="rrinv_test-code", role=ApiKeyRole.EXECUTIVE
+    )
+
+    mock_db.add.assert_called_once()
+    created = mock_db.add.call_args.args[0]
+    assert created.organization_id == invites_org_id
+    assert created.organization_id != some_other_org_id
 
 
 @pytest.mark.asyncio

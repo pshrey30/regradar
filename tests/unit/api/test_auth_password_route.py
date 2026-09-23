@@ -74,6 +74,7 @@ def _patch_signup_db(
     existing_email_row=None,
     invite_valid: bool = True,
     org_id=None,
+    stale_org_lookup_id=None,
 ):
     """Sequences the two queries signup() issues in order: the
     email-uniqueness check, then the invite-consuming UPDATE...RETURNING
@@ -81,7 +82,17 @@ def _patch_signup_db(
     is no separate org lookup any more, since the new account joins
     whichever org the invite itself belongs to) — matching exactly what
     the real route does, so a test can't accidentally pass by mocking
-    queries out of order."""
+    queries out of order.
+
+    `stale_org_lookup_id`, when given, queues a THIRD mock result behind
+    the two real ones, standing in for the old "first-created org"
+    `select(Organization.id).order_by(...).limit(1)` query this task
+    removed. signup() itself never issues a third query any more, so this
+    item is normally never consumed — it exists purely as a regression
+    trap: if that old lookup were ever reintroduced, it would consume
+    this third item and get `stale_org_lookup_id` back as `org_id`,
+    which a caller can then assert was NOT what ended up on the created
+    row (see test_signup_joins_the_invites_own_org_not_a_different_org)."""
     mock_db = AsyncMock()
 
     email_result = MagicMock()
@@ -92,8 +103,14 @@ def _patch_signup_db(
         return_value=(org_id or uuid4()) if invite_valid else None
     )
 
+    stale_org_result = MagicMock()
+    stale_org_result.scalar_one = MagicMock(return_value=stale_org_lookup_id)
+    stale_org_result.scalar_one_or_none = MagicMock(return_value=stale_org_lookup_id)
+
     if existing_email_row is not None:
         queue = [email_result]
+    elif stale_org_lookup_id is not None:
+        queue = [email_result, invite_result, stale_org_result]
     else:
         queue = [email_result, invite_result]
     real_results = iter(queue)
@@ -173,15 +190,23 @@ async def test_signup_joins_the_invites_own_org_not_a_different_org(
     """Regression test for the cross-tenant bug this migration/task fixes:
     signup() used to look up "the first-created org" independently of
     which org's Admin actually issued the invite. Here the invite's own
-    org and some other (e.g. first-created) org are deliberately
-    different UUIDs, so a test that only checked "some org_id was set"
-    could pass even with the old, buggy behavior — this asserts the
-    specific value."""
+    org and some other ("first-created") org are deliberately different
+    UUIDs, and `stale_org_lookup_id` queues that other org behind a THIRD
+    mock query slot standing in for the old, now-removed
+    `select(Organization.id).order_by(...).limit(1)` lookup. signup()
+    itself never issues that third query any more, so this test passes
+    today because the created row's org matches the invite's own org
+    (`invites_org_id`) — but if someone ever reintroduced the old lookup,
+    it would consume this third slot, get `some_other_org_id` back, and
+    this test's `!= some_other_org_id` assertion would then genuinely
+    fail on a real mismatch, not merely on an exhausted mock queue."""
     invites_org_id = uuid4()
     some_other_org_id = uuid4()
     assert invites_org_id != some_other_org_id
 
-    mock_db = _patch_signup_db(monkeypatch, org_id=invites_org_id)
+    mock_db = _patch_signup_db(
+        monkeypatch, org_id=invites_org_id, stale_org_lookup_id=some_other_org_id
+    )
 
     await auth_module.signup(
         SignupRequest(
