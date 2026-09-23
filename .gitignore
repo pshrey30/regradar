@@ -23,6 +23,10 @@ htmlcov/
 # Project planning/spec PDFs — kept local, not published to the repo
 Document files/
 
+# Developer-local docs (ADRs, audits, superpowers specs/plans) — kept on
+# disk for local use only, never pushed to the repo
+docs/
+
 # Claude Code local tooling config — not part of the product
 .claude/
 .agents/
