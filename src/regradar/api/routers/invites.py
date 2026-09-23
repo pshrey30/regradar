@@ -49,6 +49,7 @@ async def create_invite(
     plaintext_code = generate_invite_code()
     new_invite = Invite(
         id=uuid.uuid4(),
+        organization_id=key.organization_id,
         code_hash=hash_api_key(plaintext_code),
         code_suffix=plaintext_code[-4:],
         created_by=key.id,

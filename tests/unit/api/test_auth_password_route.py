@@ -75,9 +75,11 @@ def _patch_signup_db(
     invite_valid: bool = True,
     org_id=None,
 ):
-    """Sequences the three queries signup() issues in order: the
-    email-uniqueness check, the invite-consuming UPDATE...RETURNING, and
-    (only if both of those pass) the org lookup — matching exactly what
+    """Sequences the two queries signup() issues in order: the
+    email-uniqueness check, then the invite-consuming UPDATE...RETURNING
+    (which now returns the invite's own organization_id directly — there
+    is no separate org lookup any more, since the new account joins
+    whichever org the invite itself belongs to) — matching exactly what
     the real route does, so a test can't accidentally pass by mocking
     queries out of order."""
     mock_db = AsyncMock()
@@ -86,17 +88,14 @@ def _patch_signup_db(
     email_result.scalar_one_or_none = MagicMock(return_value=existing_email_row)
 
     invite_result = MagicMock()
-    invite_result.scalar_one_or_none = MagicMock(return_value=uuid4() if invite_valid else None)
-
-    org_result = MagicMock()
-    org_result.scalar_one = MagicMock(return_value=org_id or uuid4())
+    invite_result.scalar_one_or_none = MagicMock(
+        return_value=(org_id or uuid4()) if invite_valid else None
+    )
 
     if existing_email_row is not None:
         queue = [email_result]
-    elif not invite_valid:
-        queue = [email_result, invite_result]
     else:
-        queue = [email_result, invite_result, org_result]
+        queue = [email_result, invite_result]
     real_results = iter(queue)
 
     async def _execute(stmt, *args, **kwargs):
@@ -165,6 +164,37 @@ async def test_signup_uses_the_chosen_self_selectable_role(monkeypatch: pytest.M
 
     created = mock_db.add.call_args.args[0]
     assert created.role == ApiKeyRole.LEGAL_COUNSEL
+
+
+@pytest.mark.asyncio
+async def test_signup_joins_the_invites_own_org_not_a_different_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the cross-tenant bug this migration/task fixes:
+    signup() used to look up "the first-created org" independently of
+    which org's Admin actually issued the invite. Here the invite's own
+    org and some other (e.g. first-created) org are deliberately
+    different UUIDs, so a test that only checked "some org_id was set"
+    could pass even with the old, buggy behavior — this asserts the
+    specific value."""
+    invites_org_id = uuid4()
+    some_other_org_id = uuid4()
+    assert invites_org_id != some_other_org_id
+
+    mock_db = _patch_signup_db(monkeypatch, org_id=invites_org_id)
+
+    await auth_module.signup(
+        SignupRequest(
+            email="new@example.com",
+            password="a-real-password",
+            display_name="New Person",
+            **_VALID_SIGNUP_KWARGS,
+        )
+    )
+
+    created = mock_db.add.call_args.args[0]
+    assert created.organization_id == invites_org_id
+    assert created.organization_id != some_other_org_id
 
 
 def test_signup_request_rejects_admin_role() -> None:

@@ -21,6 +21,9 @@ class Invite(Base):
     __tablename__ = "invites"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+    )
     code_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     code_suffix: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(

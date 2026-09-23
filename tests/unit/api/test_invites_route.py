@@ -46,6 +46,8 @@ def _mock_auth_and_rate_limit(monkeypatch: pytest.MonkeyPatch, *, role: ApiKeyRo
     mock_redis.expire = AsyncMock()
     monkeypatch.setattr(rate_limit_module, "get_redis_client", lambda: mock_redis)
 
+    return row
+
 
 def _mock_route_db(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     mock_db = AsyncMock()
@@ -129,6 +131,45 @@ def test_list_invites_never_includes_plaintext_code(monkeypatch: pytest.MonkeyPa
     assert "code" not in body
     assert "code_hash" not in body
     assert body["code_suffix"] == "abcd"
+
+
+def test_list_invites_scopes_rls_context_to_callers_own_org(monkeypatch: pytest.MonkeyPatch):
+    """The actual cross-tenant enforcement for GET /v1/invites is a
+    Postgres RLS policy (migration 0028's `invites_select`), not app-layer
+    code in list_invites() itself — this route runs an unfiltered
+    `select(Invite)` and relies entirely on RLS to scope the result set to
+    the caller's own org. That's a real Postgres behavior this unit test
+    (no live Postgres available in this environment, same constraint every
+    other task in this plan hit) cannot exercise directly.
+
+    What CAN be verified at the unit level is the mechanism RLS depends
+    on: get_authenticated_db (api/middleware/rate_limit.py) must set
+    `app.current_organization_id` to the AUTHENTICATED CALLER's own
+    organization_id on the exact session list_invites() then queries with
+    — if that ever regressed (e.g. left unset, or used some other org's
+    id), the RLS policy would silently stop scoping correctly regardless
+    of anything list_invites() itself does. This asserts that wiring end
+    to end through the real dependency chain, only stubbing out the
+    database itself.
+    """
+    key_row = _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    mock_db = _mock_route_db(monkeypatch)
+    result = MagicMock()
+    result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+    mock_db.execute = AsyncMock(return_value=result)
+
+    response = TestClient(create_app()).get(
+        "/v1/invites", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 200
+    org_id_calls = [
+        call.args[1]["org_id"]
+        for call in mock_db.execute.call_args_list
+        if len(call.args) > 1 and isinstance(call.args[1], dict) and "org_id" in call.args[1]
+    ]
+    assert org_id_calls, "expected set_rls_context to set app.current_organization_id"
+    assert all(org_id == str(key_row.organization_id) for org_id in org_id_calls)
 
 
 def test_list_invites_shows_used_status(monkeypatch: pytest.MonkeyPatch):

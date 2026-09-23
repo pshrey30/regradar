@@ -12,9 +12,13 @@ previous session invalid the moment a new one starts — a deliberate
 single-active-session-per-identity simplification for a portfolio
 project, not a scalability requirement.
 
-No organization-management surface exists yet (SEC-05's own precedent,
-still true) — a first-time signup (either method) is provisioned into the
-single, first-created organization, same as `create-api-key`.
+An invited signup (either method) is provisioned into the invite's OWN
+`organization_id` — the org whose Admin actually created that invite
+(invites are org-scoped: see `models/invite.py` and migration 0028) — not
+into any separately-looked-up org. An account created via
+`POST /v1/auth/signup-org` instead provisions a brand-new organization of
+its own; `create-api-key` (Admin-only, out of band) still provisions into
+whatever org the calling Admin belongs to.
 
 Every signup path — email/password AND Google SSO — is invite-gated: both
 require a valid, unused code from an Admin-created `invites` row
@@ -52,6 +56,7 @@ still exists and works.
 """
 
 import logging
+import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Cookie, Depends, Response
@@ -108,7 +113,7 @@ _INVALID_INVITE_ERROR = ApiError(
 )
 
 
-async def _consume_invite(db: AsyncSession, *, code: str, used_by_email: str) -> None:
+async def _consume_invite(db: AsyncSession, *, code: str, used_by_email: str) -> uuid.UUID:
     """Atomically validates and consumes an invite code — the `WHERE
     used_at IS NULL` conditional UPDATE is what makes a code single-use
     even under two concurrent signups racing the same code (same pattern
@@ -116,16 +121,26 @@ async def _consume_invite(db: AsyncSession, *, code: str, used_by_email: str) ->
     ApiError(422) if the code doesn't exist or was already used; the
     caller decides how to surface that (signup() lets it become the
     request's own error response; the Google flow catches it and turns
-    it into a redirect instead, since that flow can't return raw JSON)."""
+    it into a redirect instead, since that flow can't return raw JSON).
+
+    Returns the invite's own `organization_id` — the new account joins
+    THAT org, not any separately-looked-up org. This used to be a real
+    cross-tenant bug: signup()/_find_or_create_api_key each independently
+    looked up the first-created org for the new account, so once
+    `signup-org` let a second (or third, ...) org exist, every invited
+    signup still silently landed in whichever org happened to be created
+    first, regardless of which org actually issued the invite."""
     code_hash = hash_api_key(code)
     result = await db.execute(
         update(Invite)
         .where(Invite.code_hash == code_hash, Invite.used_at.is_(None))
         .values(used_at=datetime.now(UTC), used_by_email=used_by_email)
-        .returning(Invite.id)
+        .returning(Invite.organization_id)
     )
-    if result.scalar_one_or_none() is None:
+    org_id = result.scalar_one_or_none()
+    if org_id is None:
         raise _INVALID_INVITE_ERROR
+    return org_id
 
 
 # Google sign-in is temporarily disabled, both routes below — not just the
@@ -239,11 +254,8 @@ async def _find_or_create_api_key(
         if key is None:
             if not invite_code or role not in SELF_SELECTABLE_ROLES:
                 raise _INVALID_INVITE_ERROR
-            await _consume_invite(db, code=invite_code, used_by_email=identity.email)
+            org_id = await _consume_invite(db, code=invite_code, used_by_email=identity.email)
 
-            org_id = (
-                await db.execute(select(Organization.id).order_by(Organization.created_at.asc()).limit(1))
-            ).scalar_one()
             key = ApiKey(
                 organization_id=org_id,
                 owner_label=identity.name or identity.email,
@@ -420,11 +432,8 @@ async def signup(payload: SignupRequest) -> Response:
         # email really was taken) never burns a real invite, and if
         # anything below fails, the whole transaction (including this
         # UPDATE) rolls back together.
-        await _consume_invite(db, code=payload.invite_code, used_by_email=payload.email)
+        org_id = await _consume_invite(db, code=payload.invite_code, used_by_email=payload.email)
 
-        org_id = (
-            await db.execute(select(Organization.id).order_by(Organization.created_at.asc()).limit(1))
-        ).scalar_one()
         key = ApiKey(
             organization_id=org_id,
             owner_label=payload.display_name or payload.email,
