@@ -281,8 +281,9 @@ def test_process_filing_handles_result_dict_missing_domain_key_entirely(
     filing.id = filing_id
     filing.raw_pdf_s3_key = None
 
+    profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
-    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
 
     mock_session_factory = MagicMock()
