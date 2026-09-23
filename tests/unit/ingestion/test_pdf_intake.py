@@ -219,3 +219,50 @@ async def test_download_retried_once_before_succeeding(monkeypatch: pytest.Monke
 
     assert call_count["n"] == 2
     assert filing.raw_pdf_s3_key == key
+
+
+async def test_success_path_reasserts_rls_context_after_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live-verified real bug during ORG-11/Groq testing: db.commit() (here,
+    persisting raw_pdf_s3_key) reverts Postgres' transaction-scoped RLS GUC
+    (set_config(..., true)), and sec_edgar.py's poll_edgar loop reuses this
+    same `db` session for the NEXT candidate's insert — which then failed
+    with a real InsufficientPrivilegeError. set_rls_context must be
+    re-asserted immediately after every commit in this module."""
+    with mock_aws():
+        real_s3 = boto3.client("s3", region_name="us-east-1")
+        real_s3.create_bucket(Bucket=BUCKET_NAME)
+        monkeypatch.setattr(pdf_intake, "get_s3_client", lambda: real_s3)
+        monkeypatch.setattr(pdf_intake.httpx, "get", MagicMock(return_value=_mock_http_response()))
+        mock_set_rls_context = AsyncMock()
+        monkeypatch.setattr(pdf_intake, "set_rls_context", mock_set_rls_context)
+
+        filing = _make_filing_stub()
+        db = _make_mock_db(filing)
+
+        await pdf_intake.intake_pdf("https://example.com/filing.pdf", uuid.uuid4(), db)
+
+    db.commit.assert_awaited_once()
+    mock_set_rls_context.assert_awaited_once_with(db, role="service")
+
+
+async def test_failure_path_reasserts_rls_context_after_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise(*args, **kwargs):
+        raise httpx.ConnectError("simulated failure")
+
+    monkeypatch.setattr(pdf_intake.httpx, "get", _raise)
+    monkeypatch.setattr(pdf_intake.time, "sleep", lambda _: None)
+    mock_set_rls_context = AsyncMock()
+    monkeypatch.setattr(pdf_intake, "set_rls_context", mock_set_rls_context)
+
+    filing = _make_filing_stub()
+    db = _make_mock_db(filing)
+
+    with pytest.raises(pdf_intake.PdfIntakeError):
+        await pdf_intake.intake_pdf("https://example.com/filing.pdf", uuid.uuid4(), db)
+
+    db.commit.assert_awaited_once()
+    mock_set_rls_context.assert_awaited_once_with(db, role="service")

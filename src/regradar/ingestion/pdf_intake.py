@@ -27,6 +27,7 @@ from botocore.exceptions import ClientError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from regradar.core.config import get_settings
+from regradar.core.db import set_rls_context
 from regradar.core.s3_client import get_s3_client
 from regradar.models.enums import FilingStatus
 from regradar.models.filing import Filing
@@ -118,6 +119,13 @@ async def intake_pdf(url: str, filing_id: uuid.UUID, db: AsyncSession) -> str:
             filing.status = FilingStatus.FAILED
             filing.processing_error = error_message
             await db.commit()
+            # Live-verified real bug: set_config(..., true) is transaction-
+            # scoped, so this commit silently reverts app.current_role —
+            # sec_edgar.py's poll_edgar loop reuses this same `db` session
+            # for the next candidate's insert_new_filing, which would then
+            # fail with InsufficientPrivilegeError under RLS. Re-assert
+            # immediately so the caller's session stays usable.
+            await set_rls_context(db, role="service")
         raise PdfIntakeError(error_message) from exc
 
     content_hash = hashlib.sha256(content).hexdigest()
@@ -136,5 +144,8 @@ async def intake_pdf(url: str, filing_id: uuid.UUID, db: AsyncSession) -> str:
     if filing is not None:
         filing.raw_pdf_s3_key = s3_key
         await db.commit()
+        # See the comment on the other db.commit() above — same
+        # transaction-scoped RLS GUC revert, same re-assertion needed.
+        await set_rls_context(db, role="service")
 
     return s3_key
