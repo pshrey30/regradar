@@ -23,7 +23,14 @@ import logging
 import re
 from typing import cast
 
-from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    BadRequestError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
@@ -256,7 +263,16 @@ def summarize_node(state: PipelineState) -> PipelineState:
             model_name = choice.model
             used_fallback = True
             max_attempts_this_run += 1
-        except (json.JSONDecodeError, SummarizationError) as exc:
+        except (json.JSONDecodeError, SummarizationError, BadRequestError, APIStatusError) as exc:
+            # BadRequestError/APIStatusError (same real gaps fixed in
+            # analysis_agent.py, including a live-verified 413 "too large
+            # for tokens per minute" from Groq's free tier): both are
+            # bad-output/oversized-request cases, not provider-unavailable
+            # cases, so this retries with feedback rather than switching
+            # tiers — see analysis_agent.py's matching comment for the
+            # full reasoning on why APIStatusError specifically needs its
+            # own catch (the openai SDK only names subclasses for specific
+            # status codes; 413 isn't one of them).
             last_error = exc
             retry_issue = str(exc)
             logger.warning(

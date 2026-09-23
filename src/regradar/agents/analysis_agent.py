@@ -16,7 +16,14 @@ import json
 import logging
 from typing import cast
 
-from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    BadRequestError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
@@ -235,7 +242,30 @@ def analyze_node(state: PipelineState) -> PipelineState:
             model_name = choice.model
             used_fallback = True
             max_attempts_this_run += 1
-        except (json.JSONDecodeError, AnalysisError) as exc:
+        except (json.JSONDecodeError, AnalysisError, BadRequestError, APIStatusError) as exc:
+            # BadRequestError (live-verified real case): Groq's own
+            # strict:true JSON-schema enforcement can still reject a
+            # malformed generation server-side (e.g. a stray "" mixed into
+            # an array of objects) — semantically the same as our own
+            # validation catching bad output, not a "provider unavailable"
+            # case, so this retries with the stricter prompt rather than
+            # switching tiers, which wouldn't fix a schema-shape problem.
+            #
+            # APIStatusError (also live-verified: a real 413 "Request too
+            # large... tokens per minute (TPM)" from Groq's free tier on a
+            # large real filing) — the openai SDK only maps specific status
+            # codes to named subclasses (400/401/403/404/409/422/429/5xx);
+            # anything else, including 413, raises the bare base class,
+            # which neither this tuple nor the tier-fallback one above used
+            # to catch — it propagated uncaught, crashing the whole
+            # pipeline task instead of degrading to needs_review like every
+            # other malformed/oversized-response case here. A stricter-
+            # prompt retry won't shrink the token count, so this will
+            # likely still fail and fall through to needs_review below —
+            # which is the correct, graceful outcome for a filing too large
+            # for the free tier's per-minute token budget, matching the
+            # existing "never crash the pipeline" contract instead of
+            # leaving it to a batch-level catch-all.
             last_error = exc
             logger.warning(
                 "Extraction attempt %d failed for filing %s: %s",

@@ -9,7 +9,7 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import httpx
-from openai import APIConnectionError, InternalServerError
+from openai import APIConnectionError, APIStatusError, BadRequestError, InternalServerError
 
 from regradar.agents.state import ExtractionResult, PipelineState
 from regradar.agents.summarization_agent import SUMMARIZATION_SCHEMA, summarize_node
@@ -84,6 +84,57 @@ def test_summarize_node_populates_briefs_on_valid_response() -> None:
     assert "domain=financial" in result.briefs.engineer_summary
     assert "risk_level=high" in result.briefs.engineer_summary
     assert "obligations_extracted=1" in result.briefs.engineer_summary
+
+
+def test_summarize_node_retries_once_on_bad_request_error_then_succeeds() -> None:
+    """Regression test for the same real, live-verified bug fixed in
+    analysis_agent.py: Groq's strict:true JSON-schema enforcement can
+    reject a malformed generation server-side with a 400 BadRequestError,
+    which must retry like any other malformed-output case, not crash."""
+    valid_content = json.dumps(VALID_SUMMARIZATION_JSON)
+    request = httpx.Request("POST", "http://test")
+    response = httpx.Response(400, request=request)
+    bad_request_error = BadRequestError(
+        message="Failed to validate JSON.", response=response, body=None
+    )
+    client = MagicMock()
+    valid_response = MagicMock()
+    valid_response.choices = [MagicMock(message=MagicMock(content=valid_content))]
+    client.chat.completions.create.side_effect = [bad_request_error, valid_response]
+
+    with patch(
+        "regradar.agents.summarization_agent._get_llm_client",
+        return_value=(client, "llama3.1", _fake_model_choice()),
+    ):
+        result = summarize_node(_make_state_with_extraction())
+
+    assert result.briefs is not None
+    assert client.chat.completions.create.call_count == 2
+
+
+def test_summarize_node_leaves_briefs_none_after_two_api_status_errors() -> None:
+    """Regression test for the same real, live-verified bug fixed in
+    analysis_agent.py: a real Groq 413 raises the openai SDK's generic
+    APIStatusError base class, which must degrade to briefs=None/
+    needs_review, not crash the whole pipeline task."""
+    request = httpx.Request("POST", "http://test")
+    response = httpx.Response(413, request=request)
+    too_large_error = APIStatusError(
+        message="Request too large for model on tokens per minute (TPM)",
+        response=response,
+        body=None,
+    )
+    client = MagicMock()
+    client.chat.completions.create.side_effect = too_large_error
+
+    with patch(
+        "regradar.agents.summarization_agent._get_llm_client",
+        return_value=(client, "llama3.1", _fake_model_choice()),
+    ):
+        result = summarize_node(_make_state_with_extraction())
+
+    assert result.briefs is None
+    assert client.chat.completions.create.call_count == 2
 
 
 def test_summarize_node_retries_once_on_malformed_json_then_succeeds() -> None:
