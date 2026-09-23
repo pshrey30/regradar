@@ -1,18 +1,25 @@
 """Tiered model routing — a single decision point every LLM-calling agent
-uses to pick between the "high" tier (GPT-4o, or local llama3.1) and the
-cheaper "low" tier (HF-hosted Granite-13B, or local llama3.2:1b), based on
+uses to pick between the "high" tier and the cheaper "low" tier, based on
 a filing's risk_level.
 
-Deviates from the ticket's literal GPT-4o/Granite-13B wording for the
-LOCAL_LLM mode: this project runs entirely on free local Ollama in dev
-(ADR-05), so the "low" tier here routes to a second, genuinely smaller
-local model (llama3.2:1b) rather than collapsing to the same model as the
-high tier — chosen explicitly so tiered routing can be live-verified with
-two real, distinct outputs at $0 cost, per user decision. The real
-OpenAI-high/HF-Granite-low path is implemented per the ticket's literal
-spec but — like AGENT-03's GPT-4o spot check — is untested against a real
-provider (no OpenAI/HF chat-completions credits provisioned); only the
-local-mode path and mocked unit tests exercise this code.
+Local dev (USE_LOCAL_LLM=true) runs entirely on free local Ollama (ADR-05):
+"low" routes to a second, genuinely smaller local model (llama3.2:1b)
+rather than collapsing to the same model as the high tier, so tiered
+routing can be live-verified with two real, distinct outputs at $0 cost.
+
+The non-local branch routes to Groq (openai/gpt-oss-120b high tier,
+openai/gpt-oss-20b low tier by default) via Groq's OpenAI-compatible
+endpoint — replacing a previously untested real-OpenAI-high/HF-Granite-low
+path (no OpenAI/HF chat-completions credits were ever provisioned for it;
+only the local-mode path and mocked unit tests ever exercised that code).
+Groq was chosen for a cost-constrained, low-volume deployment: its free
+tier (org-wide, not per-model) comfortably covers a small polling cadence,
+and gpt-oss-120b/20b are the only two Groq models supporting the
+`strict: true` JSON-schema mode analysis_agent.py/relevance_agent.py
+already require. No fallback provider is configured on Groq rate-limit —
+each agent's existing retry/degrade behavior (tier-swap via
+other_tier_choice, then needs_review/neutral-default) is unchanged and
+is expected to rarely if ever trigger at this deployment's volume.
 """
 
 from typing import Literal
@@ -82,14 +89,14 @@ def select_model_for_tier(tier: Tier, task: Task) -> ModelChoice:
         return ModelChoice(
             tier="high",
             model=settings.tier_high_model,
-            base_url=None,
-            api_key=settings.openai_api_key,
+            base_url=settings.groq_base_url,
+            api_key=settings.groq_api_key,
         )
     return ModelChoice(
         tier="low",
         model=settings.tier_low_model,
-        base_url="https://router.huggingface.co/v1",
-        api_key=settings.huggingface_api_token,
+        base_url=settings.groq_base_url,
+        api_key=settings.groq_api_key,
     )
 
 

@@ -16,7 +16,14 @@ import json
 import logging
 from typing import cast
 
-from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    BadRequestError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONSchema
 
@@ -63,6 +70,7 @@ EXTRACTION_SCHEMA = {
                     "source_chunk_index": {"type": "integer"},
                 },
                 "required": ["description", "source_chunk_index"],
+                "additionalProperties": False,
             },
         },
         "deadlines": {
@@ -74,6 +82,7 @@ EXTRACTION_SCHEMA = {
                     "date": {"type": "string"},
                 },
                 "required": ["description", "date"],
+                "additionalProperties": False,
             },
         },
         "risk_flags": {"type": "array", "items": {"type": "string"}},
@@ -89,6 +98,7 @@ EXTRACTION_SCHEMA = {
         "key_entities",
         "competitor_mentions",
     ],
+    "additionalProperties": False,
 }
 
 
@@ -147,7 +157,7 @@ def _validate_extraction(parsed: dict, chunk_count: int) -> None:
     escape and crash the pipeline.
     """
     try:
-        for key in EXTRACTION_SCHEMA["required"]:
+        for key in cast(list, EXTRACTION_SCHEMA["required"]):
             if key not in parsed:
                 raise AnalysisError(f"Missing required field: {key}")
 
@@ -232,7 +242,30 @@ def analyze_node(state: PipelineState) -> PipelineState:
             model_name = choice.model
             used_fallback = True
             max_attempts_this_run += 1
-        except (json.JSONDecodeError, AnalysisError) as exc:
+        except (json.JSONDecodeError, AnalysisError, BadRequestError, APIStatusError) as exc:
+            # BadRequestError (live-verified real case): Groq's own
+            # strict:true JSON-schema enforcement can still reject a
+            # malformed generation server-side (e.g. a stray "" mixed into
+            # an array of objects) — semantically the same as our own
+            # validation catching bad output, not a "provider unavailable"
+            # case, so this retries with the stricter prompt rather than
+            # switching tiers, which wouldn't fix a schema-shape problem.
+            #
+            # APIStatusError (also live-verified: a real 413 "Request too
+            # large... tokens per minute (TPM)" from Groq's free tier on a
+            # large real filing) — the openai SDK only maps specific status
+            # codes to named subclasses (400/401/403/404/409/422/429/5xx);
+            # anything else, including 413, raises the bare base class,
+            # which neither this tuple nor the tier-fallback one above used
+            # to catch — it propagated uncaught, crashing the whole
+            # pipeline task instead of degrading to needs_review like every
+            # other malformed/oversized-response case here. A stricter-
+            # prompt retry won't shrink the token count, so this will
+            # likely still fail and fall through to needs_review below —
+            # which is the correct, graceful outcome for a filing too large
+            # for the free tier's per-minute token budget, matching the
+            # existing "never crash the pipeline" contract instead of
+            # leaving it to a batch-level catch-all.
             last_error = exc
             logger.warning(
                 "Extraction attempt %d failed for filing %s: %s",

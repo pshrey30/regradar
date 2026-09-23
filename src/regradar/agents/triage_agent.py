@@ -131,10 +131,10 @@ def classify_filing(text: str) -> ClassificationResult:
 
 
 def _get_llm_client() -> tuple[OpenAI, str]:
-    """Returns (client, model_name), routed to local Ollama or real OpenAI
-    per settings.use_local_llm. Both branches use the same OpenAI SDK
-    class — Ollama's OpenAI-compatible endpoint means no separate client
-    or code path is needed for the two cases.
+    """Returns (client, model_name), routed to local Ollama or Groq per
+    settings.use_local_llm. Both branches use the same OpenAI SDK class —
+    Ollama's and Groq's OpenAI-compatible endpoints mean no separate
+    client or code path is needed for the two cases.
     """
     settings = get_settings()
     if settings.use_local_llm:
@@ -142,7 +142,10 @@ def _get_llm_client() -> tuple[OpenAI, str]:
             OpenAI(base_url=settings.local_llm_base_url, api_key="ollama-local"),
             settings.local_llm_model,
         )
-    return OpenAI(api_key=settings.openai_api_key.get_secret_value()), settings.tier_high_model
+    return (
+        OpenAI(base_url=settings.groq_base_url, api_key=settings.groq_api_key.get_secret_value()),
+        settings.tier_high_model,
+    )
 
 
 def spot_check_classification(text: str) -> SpotCheckResult | None:

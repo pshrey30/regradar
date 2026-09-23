@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from regradar.agents.relevance_agent import (
+    RELEVANCE_SCHEMA,
     RelevanceError,
     _validate_relevance,
     compute_priority_score,
@@ -180,3 +181,24 @@ def test_compute_priority_score_weights_severity_and_relevance_equally() -> None
     assert compute_priority_score(RiskLevel.CRITICAL, 1.0) == 100.0
     assert compute_priority_score(RiskLevel.LOW, 0.0) == 0.0
     assert compute_priority_score(RiskLevel.HIGH, 0.5) == round(100 * (0.5 * (2 / 3) + 0.5 * 0.5), 1)
+
+
+def _assert_additional_properties_false_on_every_object(schema: dict) -> None:
+    """Groq's strict JSON-schema mode (the only provider mode gpt-oss-120b/20b
+    support) rejects the whole request with a 400 unless EVERY object node in
+    the schema tree — including the root — sets additionalProperties: false,
+    not just the ones OpenAI's own strict mode happens to require. This was a
+    real, silent, always-degrades-to-the-neutral-default bug caught only by a
+    live Groq call, since every other test here mocks the client entirely."""
+    if schema.get("type") == "object":
+        assert schema.get("additionalProperties") is False, (
+            f"object node missing additionalProperties: false: {schema}"
+        )
+    for value in schema.get("properties", {}).values():
+        _assert_additional_properties_false_on_every_object(value)
+    if "items" in schema:
+        _assert_additional_properties_false_on_every_object(schema["items"])
+
+
+def test_relevance_schema_sets_additional_properties_false_on_every_object() -> None:
+    _assert_additional_properties_false_on_every_object(RELEVANCE_SCHEMA)

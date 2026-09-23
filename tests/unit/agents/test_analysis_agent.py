@@ -11,9 +11,9 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import httpx
-from openai import APIConnectionError, InternalServerError
+from openai import APIConnectionError, APIStatusError, BadRequestError, InternalServerError
 
-from regradar.agents.analysis_agent import analyze_node
+from regradar.agents.analysis_agent import EXTRACTION_SCHEMA, analyze_node
 from regradar.agents.state import PipelineState
 from regradar.llm_routing.tiered_router import ModelChoice
 from regradar.models.enums import RiskLevel
@@ -75,6 +75,60 @@ def test_analyze_node_populates_extraction_on_valid_response() -> None:
     assert result.extraction.deadlines == VALID_EXTRACTION_JSON["deadlines"]
     assert result.extraction.risk_flags == ["material weakness"]
     assert result.extraction.model_used == "llama3.1"
+
+
+def test_analyze_node_retries_once_on_bad_request_error_then_succeeds() -> None:
+    """Regression test for a real, live-verified bug: Groq's own strict:true
+    JSON-schema enforcement rejected a malformed generation server-side
+    (a stray "" mixed into a deadlines array) with a 400 BadRequestError,
+    which was not in the retry loop's except tuple and crashed the whole
+    pipeline task instead of retrying like any other malformed-output case."""
+    valid_content = json.dumps(VALID_EXTRACTION_JSON)
+    request = httpx.Request("POST", "http://test")
+    response = httpx.Response(400, request=request)
+    bad_request_error = BadRequestError(
+        message="Failed to validate JSON.", response=response, body=None
+    )
+    client = MagicMock()
+    valid_response = MagicMock()
+    valid_response.choices = [MagicMock(message=MagicMock(content=valid_content))]
+    client.chat.completions.create.side_effect = [bad_request_error, valid_response]
+
+    with patch(
+        "regradar.agents.analysis_agent._get_llm_client",
+        return_value=(client, "llama3.1", _fake_model_choice()),
+    ):
+        result = analyze_node(_make_state_with_chunks())
+
+    assert result.extraction is not None
+    assert client.chat.completions.create.call_count == 2
+
+
+def test_analyze_node_leaves_extraction_none_after_two_api_status_errors() -> None:
+    """Regression test for a real, live-verified bug: a real Groq 413
+    ("Request too large... tokens per minute") on a large real filing
+    raised the openai SDK's generic APIStatusError base class (413 has no
+    named subclass), which was not caught anywhere and crashed the whole
+    pipeline task instead of degrading to extraction=None/needs_review
+    like every other malformed/oversized-response case."""
+    request = httpx.Request("POST", "http://test")
+    response = httpx.Response(413, request=request)
+    too_large_error = APIStatusError(
+        message="Request too large for model on tokens per minute (TPM)",
+        response=response,
+        body=None,
+    )
+    client = MagicMock()
+    client.chat.completions.create.side_effect = too_large_error
+
+    with patch(
+        "regradar.agents.analysis_agent._get_llm_client",
+        return_value=(client, "llama3.1", _fake_model_choice()),
+    ):
+        result = analyze_node(_make_state_with_chunks())
+
+    assert result.extraction is None
+    assert client.chat.completions.create.call_count == 2
 
 
 def test_analyze_node_retries_once_on_malformed_json_then_succeeds() -> None:
@@ -339,3 +393,23 @@ def test_analyze_node_gives_up_after_fallback_also_fails() -> None:
         result = analyze_node(_make_state_with_chunks())
 
     assert result.extraction is None
+
+
+def _assert_additional_properties_false_on_every_object(schema: dict) -> None:
+    """Groq's strict JSON-schema mode (the only provider mode gpt-oss-120b/20b
+    support) rejects the whole request with a 400 unless EVERY object node in
+    the schema tree — including the root — sets additionalProperties: false.
+    Caught only by a live Groq call during the ORG-11 provider migration,
+    since every other test here mocks the client entirely."""
+    if schema.get("type") == "object":
+        assert schema.get("additionalProperties") is False, (
+            f"object node missing additionalProperties: false: {schema}"
+        )
+    for value in schema.get("properties", {}).values():
+        _assert_additional_properties_false_on_every_object(value)
+    if "items" in schema:
+        _assert_additional_properties_false_on_every_object(schema["items"])
+
+
+def test_extraction_schema_sets_additional_properties_false_on_every_object() -> None:
+    _assert_additional_properties_false_on_every_object(EXTRACTION_SCHEMA)

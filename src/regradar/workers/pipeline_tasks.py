@@ -106,31 +106,43 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
         # supersedes whatever _mark_filing_failed recorded last time.
         filing.processing_error = None
 
-        if result["domain"] is None:
+        # .get(...) everywhere below (live-verified real bug): a node whose
+        # failure path does `return state` unchanged — e.g. triage_node on
+        # HF classification failure, or analyze_node when state.chunks is
+        # empty — never explicitly sets its field via model_copy(update=
+        # {...}), and that field was never in the initial PipelineState
+        # construction's kwargs either (only its Pydantic default applies
+        # in-process). ainvoke()'s returned dict genuinely OMITS such a key
+        # entirely rather than including it as None, so a bare result["x"]
+        # raises a real KeyError, not "x is None" — this crashed every
+        # filing whose triage classification failed outright.
+        domain = result.get("domain")
+        if domain is None:
             filing.status = FilingStatus.NEEDS_CLASSIFICATION
         else:
-            filing.domain = result["domain"]
-            filing.risk_level = result["risk_level"]
-            filing.classification_confidence = result["classification_confidence"]
+            risk_level = result.get("risk_level")
+            filing.domain = domain
+            filing.risk_level = risk_level
+            filing.classification_confidence = result.get("classification_confidence")
             relevance_result = result.get("relevance")
-            if relevance_result is not None:
+            if relevance_result is not None and risk_level is not None:
                 filing.priority_score = compute_priority_score(
-                    result["risk_level"], relevance_result.relevance_score
+                    risk_level, relevance_result.relevance_score
                 )
                 filing.relevance_rationale = relevance_result.rationale
                 filing.recommended_action = relevance_result.recommended_action
                 filing.matched_signals = relevance_result.matched_signals
-            extraction_missing = result["extraction"] is None and chunks
-            briefs_missing = result["extraction"] is not None and result["briefs"] is None
+            extraction_missing = result.get("extraction") is None and chunks
+            briefs_missing = result.get("extraction") is not None and result.get("briefs") is None
             if extraction_missing or briefs_missing:
                 filing.status = FilingStatus.NEEDS_REVIEW
-            elif result["delivery_status"] is not None and result["delivery_success"]:
+            elif result.get("delivery_status") is not None and result.get("delivery_success"):
                 filing.status = FilingStatus.COMPLETE
             else:
                 filing.status = FilingStatus.CLASSIFYING
         await db.commit()
 
-        if result["extraction"] is not None:
+        if result.get("extraction") is not None:
             # result["extraction"] is a real ExtractionResult instance —
             # ainvoke() does not flatten nested Pydantic sub-models into
             # plain dicts (verified) — so this uses attribute access and
@@ -160,7 +172,7 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             )
             await db.commit()
 
-        if result["briefs"] is not None:
+        if result.get("briefs") is not None:
             # result["briefs"] is a real BriefSet instance — same
             # ainvoke() nested-Pydantic-model behavior verified for
             # ExtractionResult in AGENT-07 — attribute access only.
@@ -271,8 +283,14 @@ async def process_pending_filings() -> list[tuple[uuid.UUID, bool]]:
         try:
             await _run_pipeline_for_filing(str(filing_id))
             results.append((filing_id, True))
-        except Exception as exc:  # noqa: BLE001 — one filing's failure must not stop the batch
-            logger.error("process-pending: filing %s failed: %s", filing_id, exc)
+        except Exception as exc:
+            # logger.exception (live-verified gap): without the traceback, a
+            # real production KeyError/BadRequestError here was completely
+            # undiagnosable from logs alone — only the exception's str()
+            # was ever recorded, with no indication of which line raised it.
+            # One filing's failure must not stop the batch (broad except is
+            # intentional).
+            logger.exception("process-pending: filing %s failed", filing_id)
             await _mark_filing_failed(str(filing_id), str(exc))
             results.append((filing_id, False))
     return results

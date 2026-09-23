@@ -74,6 +74,15 @@ async def poll_source(source_config_id: uuid.UUID, source: FilingSource) -> list
 
         new_filings = await connector(source_config, db)
 
+        # Live-verified real bug: every connector (sec_edgar.py/fda_rss.py/
+        # finra_feed.py) ends with its own `await db.commit()` — even when
+        # zero new filings were found, since none of them special-case an
+        # empty result to skip that commit. set_config(..., true) is
+        # transaction-scoped, so that commit silently reverts
+        # app.current_role, and the UPDATE below then runs under a reverted
+        # role — RLS filters it to 0 matched rows, raising StaleDataError
+        # on every single poll cycle, for every source, unconditionally.
+        await set_rls_context(db, role="service")
         source_config.last_polled_at = datetime.now(UTC)
         await db.commit()
         return new_filings
