@@ -70,6 +70,23 @@ async def _succeeds_with_none(source_config, db) -> list[NewFiling]:
     return []
 
 
+async def _succeeds_with_none_but_commits_like_a_real_connector(
+    source_config, db
+) -> list[NewFiling]:
+    """Every real connector (sec_edgar.py/fda_rss.py/finra_feed.py) ends
+    with its own unconditional `await db.commit()`, even when it found
+    zero new filings — none of them special-case an empty result to skip
+    it. This stub reproduces exactly that shape, which none of this
+    file's other stubs do (they never commit at all), so this is the one
+    that actually exercises the real bug: that commit reverts the
+    transaction-scoped RLS GUC poll_source's own `set_rls_context` set,
+    and poll_source's subsequent last_polled_at UPDATE then runs under a
+    reverted role — RLS silently filters it to 0 matched rows, raising
+    StaleDataError, on every single poll cycle, for every source."""
+    await db.commit()
+    return []
+
+
 async def test_poll_all_sources_isolates_failures_and_updates_last_polled_at(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,3 +125,32 @@ async def test_poll_all_sources_isolates_failures_and_updates_last_polled_at(
 async def test_poll_all_sources_returns_empty_summary_when_nothing_active() -> None:
     summary = await flows.poll_all_sources()
     assert summary == {}
+
+
+async def test_poll_source_updates_last_polled_at_after_connector_commits_with_no_new_filings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for a real, live-verified bug (found during ORG-11/
+    Groq-migration end-to-end testing against a real Postgres instance):
+    every real connector's own trailing `db.commit()` reverts the
+    transaction-scoped RLS GUC `poll_source` set at the top of its
+    session, so its own `source_config.last_polled_at` UPDATE afterward
+    was silently filtered to 0 matched rows by RLS, raising
+    StaleDataError on every single poll cycle. Reproduced here with a
+    connector stub that commits with zero new filings — the exact shape
+    every real connector has and none of this file's other stubs do."""
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        sec_config = await _insert_source_config(db, FilingSource.SEC)
+
+    monkeypatch.setitem(
+        flows._CONNECTORS, FilingSource.SEC, _succeeds_with_none_but_commits_like_a_real_connector
+    )
+
+    result = await flows.poll_source.fn(sec_config.id, FilingSource.SEC)
+
+    assert result == []
+
+    async with session_factory() as db:
+        refreshed = await db.get(SourceConfig, sec_config.id)
+    assert refreshed.last_polled_at is not None
