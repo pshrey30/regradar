@@ -245,6 +245,54 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
     mock_db.commit.assert_awaited_once()
 
 
+def test_process_filing_handles_result_dict_missing_domain_key_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for a real, live-verified bug: a node whose failure
+    path does `return state` unchanged (e.g. triage_node on an outright
+    HF classification failure, reproduced live against a real filing with
+    no extractable text) never explicitly sets its field via
+    model_copy(update={...}) — and that field was never in the initial
+    PipelineState construction's kwargs either, only its Pydantic default.
+    ainvoke()'s returned dict genuinely OMITS such a key entirely rather
+    than including it as None (unlike the mocked dict every other test in
+    this file uses, which always includes every key with an explicit
+    None). A bare result["domain"] raised a real KeyError in production;
+    this test uses a dict missing the key altogether, the only way to
+    actually exercise that code path."""
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
+    mock_db.commit = AsyncMock()
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        # Deliberately missing "domain"/"risk_level"/"classification_confidence"/
+        # "extraction"/"briefs"/"delivery_status"/"delivery_success" entirely —
+        # matching real ainvoke() output for an unmodified initial state.
+        lambda: MagicMock(ainvoke=AsyncMock(return_value={})),
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert filing.status == FilingStatus.NEEDS_CLASSIFICATION
+    mock_db.commit.assert_awaited_once()
+
+
 def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
