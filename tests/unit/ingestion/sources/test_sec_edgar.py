@@ -112,20 +112,25 @@ async def test_already_existing_filing_is_not_reinserted(monkeypatch: pytest.Mon
 
 
 async def test_rate_limit_response_returns_empty_without_crashing(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     mock_response = MagicMock(status_code=429, text="")
     monkeypatch.setattr(sec_edgar.httpx, "get", MagicMock(return_value=mock_response))
 
     db = _make_mock_db()
-    result = await sec_edgar.poll_edgar(_make_source_config(), db)
+    with caplog.at_level("WARNING", logger="regradar.ingestion.sources.sec_edgar"):
+        result = await sec_edgar.poll_edgar(_make_source_config(), db)
 
     assert result == []
     db.execute.assert_not_called()
+    # A non-200 status must be logged, not silently indistinguishable from
+    # a genuinely empty feed — this was a real gap found live: an actual
+    # ReadTimeout on this same code path went completely unlogged.
+    assert any("429" in record.message for record in caplog.records)
 
 
 async def test_connection_error_returns_empty_without_crashing(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     def _raise_connect_error(*args, **kwargs):
         raise httpx.ConnectError("connection refused")
@@ -133,10 +138,15 @@ async def test_connection_error_returns_empty_without_crashing(
     monkeypatch.setattr(sec_edgar.httpx, "get", _raise_connect_error)
 
     db = _make_mock_db()
-    result = await sec_edgar.poll_edgar(_make_source_config(), db)
+    with caplog.at_level("WARNING", logger="regradar.ingestion.sources.sec_edgar"):
+        result = await sec_edgar.poll_edgar(_make_source_config(), db)
 
     assert result == []
     db.execute.assert_not_called()
+    assert any(
+        "EDGAR current-filings feed request failed" in record.message
+        for record in caplog.records
+    )
 
 
 def test_rate_limiter_sleeps_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:

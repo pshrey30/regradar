@@ -111,7 +111,12 @@ def _fetch_current_filings_feed(user_agent: str, count: int = 100) -> httpx.Resp
             "output": "atom",
         },
         headers={"User-Agent": user_agent},
-        timeout=10.0,
+        # Live-verified: a real count=100 request to this feed occasionally
+        # exceeds 10s (SEC's server, not our network) — 10.0 here caused a
+        # real, observed ReadTimeout mid-testing, silently swallowed by
+        # poll_edgar's `except httpx.RequestError: return []` and reported
+        # as "0 new filings" indistinguishably from a genuinely quiet feed.
+        timeout=30.0,
     )
 
 
@@ -230,15 +235,23 @@ async def poll_edgar(source_config: SourceConfig, db: AsyncSession) -> list[NewF
 
     try:
         response = _fetch_current_filings_feed(settings.sec_edgar_user_agent)
-    except httpx.RequestError:
+    except httpx.RequestError as exc:
+        # Logged so a real fetch failure is never silently indistinguishable
+        # from a genuinely quiet feed — live-verified this branch actually
+        # fires (a real ReadTimeout) during ORG-11/Groq-migration testing.
+        logger.warning("EDGAR current-filings feed request failed: %s", exc)
         return []
 
     if response.status_code != 200:
+        logger.warning(
+            "EDGAR current-filings feed returned status %s", response.status_code
+        )
         return []
 
     try:
         candidates = _parse_feed(response.text)
-    except ET.ParseError:
+    except ET.ParseError as exc:
+        logger.warning("EDGAR current-filings feed returned unparseable XML: %s", exc)
         return []
 
     if not candidates:
