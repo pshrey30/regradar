@@ -77,14 +77,24 @@ def downgrade() -> None:
         f"FOR ALL USING ({_IS_SERVICE}) WITH CHECK ({_IS_SERVICE})"
     )
 
+    # Filings parked at needs_organization_setup never actually started
+    # processing — the whole point of the gate is to short-circuit BEFORE
+    # the pipeline runs — so `ingested` (not-yet-processed) is the accurate
+    # status to revert to, not `needs_review` (which implies processing
+    # happened and produced an ambiguous result).
     op.execute(
-        f"UPDATE filings SET status = 'needs_review' WHERE status = '{_NEW_STATUS}'"
+        f"UPDATE filings SET status = 'ingested' WHERE status = '{_NEW_STATUS}'"
     )
     values_sql = ", ".join(f"'{v}'" for v in _ORIGINAL_STATUSES)
     op.execute(f"CREATE TYPE filing_status_old AS ENUM ({values_sql})")
+    # The column's server_default must be dropped before the type change —
+    # Postgres can't auto-cast a column's DEFAULT expression to the new
+    # enum type in the same ALTER — and restored after (see 0004/0006).
+    op.execute("ALTER TABLE filings ALTER COLUMN status DROP DEFAULT")
     op.execute(
         "ALTER TABLE filings ALTER COLUMN status TYPE filing_status_old "
         "USING status::text::filing_status_old"
     )
     op.execute("DROP TYPE filing_status")
     op.execute("ALTER TYPE filing_status_old RENAME TO filing_status")
+    op.execute("ALTER TABLE filings ALTER COLUMN status SET DEFAULT 'ingested'")

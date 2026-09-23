@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from regradar.api.deps import AuthenticatedKey
 from regradar.api.errors import ApiError
 from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
+from regradar.core.db import set_rls_context
 from regradar.models.enums import ApiKeyRole, FilingStatus
 from regradar.models.filing import Filing
 from regradar.models.organization_profile import OrganizationProfile, is_complete
@@ -72,6 +73,20 @@ async def update_organization_profile(
     profile.watchlist_entities = body.watchlist_entities
     profile.products = body.products
     profile.risk_priorities = body.risk_priorities
+
+    # Re-assert `service` role on this same session/transaction before the
+    # `filings` write below: filings_write (migration 0009) is service-role
+    # -only, so under the admin role this route otherwise runs as
+    # (get_authenticated_db), the requeue UPDATE would silently affect zero
+    # rows under RLS. Calling set_rls_context() here triggers SQLAlchemy's
+    # default autoflush *before* the role actually switches — the profile
+    # INSERT/UPDATE staged above is flushed first, still under the caller's
+    # own `admin` role (which organization_profiles' write policy allows),
+    # and only then does `app.current_role` become `service` for the
+    # `filings` UPDATE that follows. One transaction, one commit — the role
+    # is never reverted to admin, and no read after this point depends on
+    # admin-only visibility.
+    await set_rls_context(db, role="service")
 
     # Every filing parked waiting on this organization's setup gets the
     # same status flip fresh ingestion already uses (INGESTED) — the

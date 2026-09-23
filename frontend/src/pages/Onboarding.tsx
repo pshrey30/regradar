@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
@@ -13,6 +13,19 @@ function toList(value: string): string[] {
     .filter((item) => item.length > 0)
 }
 
+function toCommaString(list: string[]): string {
+  return list.join(', ')
+}
+
+interface OrganizationProfileResponse {
+  industry: string | null
+  business_description: string | null
+  watchlist_entities: string[]
+  products: string[]
+  risk_priorities: string[]
+  is_complete: boolean
+}
+
 export function Onboarding() {
   const { role } = useAuth()
   const [industry, setIndustry] = useState('')
@@ -22,6 +35,35 @@ export function Onboarding() {
   const [riskPriorities, setRiskPriorities] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+
+  // An Admin who navigates back to /onboarding after already completing it
+  // (e.g. to make an edit) should see their real saved data, not a blank
+  // form — submitting a blank form would overwrite it. Best-effort: if the
+  // GET fails, just leave the form blank, same as today.
+  useEffect(() => {
+    if (role !== 'admin') return
+    let cancelled = false
+    apiFetch<OrganizationProfileResponse>('/v1/organizations/me/profile')
+      .then((profile) => {
+        if (cancelled) return
+        if (profile.industry) setIndustry(profile.industry)
+        if (profile.business_description) setBusinessDescription(profile.business_description)
+        if (profile.watchlist_entities.length > 0) {
+          setWatchlistEntities(toCommaString(profile.watchlist_entities))
+        }
+        if (profile.products.length > 0) setProducts(toCommaString(profile.products))
+        if (profile.risk_priorities.length > 0) {
+          setRiskPriorities(toCommaString(profile.risk_priorities))
+        }
+      })
+      .catch(() => {
+        // Don't crash on a failed background read — same posture as the
+        // rest of this page.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [role])
 
   if (role !== 'admin') {
     return (

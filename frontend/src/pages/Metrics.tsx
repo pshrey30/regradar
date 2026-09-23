@@ -37,6 +37,7 @@ interface FunnelResponse {
 // "how far did filings get." `complete` and `failed` are the two real
 // end states; everything else is mid-pipeline.
 const _FUNNEL_ORDER = [
+  'needs_organization_setup',
   'ingested',
   'classifying',
   'needs_classification',
@@ -49,6 +50,7 @@ const _FUNNEL_ORDER = [
   'failed',
 ]
 const _FUNNEL_LABELS: Record<string, string> = {
+  needs_organization_setup: 'Needs organization setup',
   ingested: 'Ingested',
   classifying: 'Classifying',
   needs_classification: 'Needs classification',

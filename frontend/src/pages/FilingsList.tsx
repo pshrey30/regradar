@@ -117,6 +117,7 @@ const _STATUS_LABELS: Record<string, string> = {
   classifying: 'Classifying',
   needs_classification: 'Needs classification',
   needs_review: 'Needs review',
+  needs_organization_setup: 'Needs organization setup',
   retrieving: 'Retrieving',
   analyzing: 'Analyzing',
   summarizing: 'Summarizing',

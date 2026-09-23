@@ -50,8 +50,15 @@ async def update_me(
     row = await db.get(ApiKey, key.id)
     assert row is not None  # the row that authenticated this request
     row.owner_label = body.display_name
-    await db.commit()
+    # Read BEFORE commit: set_config(..., true) (what set_rls_context uses
+    # for this session's RLS role) is transaction-scoped, so a commit ends
+    # the transaction the role was set for. Fetching the profile after
+    # commit would run with no role context, and RLS would silently hide
+    # the row — organization_setup_complete would always read False
+    # regardless of the real state. This read is independent of the ApiKey
+    # write/commit below, so ordering it first is safe.
     profile = await db.get(OrganizationProfile, key.organization_id)
+    await db.commit()
     return MeResponse(
         role=row.role,
         organization_id=str(row.organization_id),

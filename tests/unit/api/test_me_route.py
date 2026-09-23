@@ -132,6 +132,61 @@ def test_update_me_changes_display_name(monkeypatch: pytest.MonkeyPatch):
     mock_db.commit.assert_awaited()
 
 
+def test_update_me_reports_organization_setup_complete_when_profile_filled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: the OrganizationProfile fetch used to happen AFTER
+    db.commit(), and since set_rls_context's set_config(..., true) is
+    transaction-scoped, the commit ended the role context, so the
+    post-commit read silently returned nothing under RLS and
+    organization_setup_complete was always False. The fetch must now
+    happen before commit()."""
+    org_id = uuid.uuid4()
+    key_id = uuid.uuid4()
+    auth_row = _mock_auth_and_rate_limit(
+        monkeypatch,
+        role=ApiKeyRole.ADMIN,
+        owner_label="old-name",
+        organization_id=org_id,
+        key_id=key_id,
+    )
+    mock_db = _mock_route_db(monkeypatch)
+    target_row = _authenticated_key_row(ApiKeyRole.ADMIN, "old-name", org_id, key_id=key_id)
+    profile = MagicMock(spec=OrganizationProfile)
+    profile.industry = "Biotech"
+    profile.business_description = "We make devices."
+    profile.watchlist_entities = ["Acme"]
+    profile.products = ["Widget"]
+    profile.risk_priorities = ["Privacy"]
+
+    async def fake_get(model, ident):
+        if model is OrganizationProfile:
+            return profile
+        return target_row
+
+    mock_db.get = AsyncMock(side_effect=fake_get)
+
+    response = TestClient(create_app()).patch(
+        "/v1/me",
+        json={"display_name": "new-name"},
+        headers={"Authorization": "Bearer rr_test-key"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["display_name"] == "new-name"
+    assert body["organization_setup_complete"] is True
+    assert target_row.id == auth_row.id
+
+    # The profile fetch (db.get for OrganizationProfile) must happen
+    # BEFORE db.commit() — not after, which is the exact bug being
+    # regression-tested here.
+    get_calls = [i for i, c in enumerate(mock_db.mock_calls) if c[0] == "get"]
+    commit_calls = [i for i, c in enumerate(mock_db.mock_calls) if c[0] == "commit"]
+    assert get_calls and commit_calls
+    assert max(get_calls) < min(commit_calls)
+
+
 def test_update_me_rejects_empty_display_name(monkeypatch: pytest.MonkeyPatch):
     _mock_auth_and_rate_limit(
         monkeypatch, role=ApiKeyRole.ANALYST, owner_label="old-name", organization_id=uuid.uuid4()
