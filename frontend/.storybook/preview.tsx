@@ -1,5 +1,5 @@
 import type { Preview } from '@storybook/react-vite'
-import { initialize, mswLoader } from 'msw-storybook-addon'
+import { mswLoader } from 'msw-storybook-addon/csf3'
 
 import '../src/index.css'
 import { setOnUnauthorized } from '../src/lib/api'
@@ -9,8 +9,6 @@ import { handlers } from '../src/mocks/handlers'
 // real app's redirect side effect — Storybook has no router history to
 // redirect within, and the real callback would throw.
 setOnUnauthorized(() => {})
-
-initialize({ onUnhandledRequest: 'bypass' })
 
 const preview: Preview = {
   parameters: {
@@ -27,13 +25,13 @@ const preview: Preview = {
       // 'off' - skip a11y checks entirely
       test: 'todo'
     },
-
-    msw: {
-      handlers,
-    },
   },
 
-  loaders: [mswLoader],
+  loaders: [mswLoader()],
+
+  beforeEach({ msw }) {
+    msw.use(...handlers)
+  },
 };
 
 export default preview;
