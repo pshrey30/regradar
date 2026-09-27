@@ -28,7 +28,9 @@ export const AddAndRemove: Story = {
   args: { initial: ['Acme Corp'] },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    const input = canvas.getByPlaceholderText('Type a name and press Enter…')
+    // Query by role rather than placeholder text: the component hides its
+    // placeholder once at least one chip exists (this story starts with one).
+    const input = canvas.getByRole('textbox')
 
     await userEvent.type(input, 'Beta LLC{enter}')
     await expect(canvas.getByText('Beta LLC')).toBeInTheDocument()
