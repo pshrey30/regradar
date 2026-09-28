@@ -72,7 +72,7 @@ export function Login() {
         // navigation) is the simplest way to make AuthProvider's GET
         // /v1/me re-run and pick it up, matching how the Google flow's
         // own redirect-back-to-frontend already forces a fresh load.
-        window.location.href = '/filings'
+        window.location.href = '/'
         return
       }
 

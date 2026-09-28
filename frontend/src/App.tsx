@@ -1,10 +1,12 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
-import { AppShell } from './components/AppShell'
+import { AdminShell } from './components/AdminShell'
+import { UserShell } from './components/UserShell'
 import { AuthProvider } from './auth/AuthContext'
-import { canSeeNavItem, useAuth, type NavItem } from './auth/useAuth'
+import { useAuth } from './auth/useAuth'
 import { Activity } from './pages/Activity'
+import { AdminOverview } from './pages/AdminOverview'
 import { ApiKeys } from './pages/ApiKeys'
 import { FilingDetail } from './pages/FilingDetail'
 import { FilingsList } from './pages/FilingsList'
@@ -22,12 +24,13 @@ import { Webhooks } from './pages/Webhooks'
 // bundled into the authenticated app's main chunk.
 const Landing = lazy(() => import('./pages/Landing').then((m) => ({ default: m.Landing })))
 
-// `navItem` is optional — routes with no role restriction (Filings, Filing
-// Detail) omit it. When present, a role that can't see the matching nav
-// item is redirected to /filings before the page (and its data queries)
-// ever mount — belt-and-suspenders on top of the backend's own 403, since
-// nav-hiding alone still let a typed-in URL reach the full page shell.
-function ProtectedRoute({ children, navItem }: { children: ReactNode; navItem?: NavItem }) {
+// Admin-only routes render inside AdminShell; every other authenticated
+// role renders inside UserShell. A route not listed in adminOnly is
+// reachable by any authenticated role that also isn't gated elsewhere
+// (Onboarding has its own internal role branch, unaffected by this).
+const ADMIN_ONLY_PATHS = new Set(['/overview', '/users', '/source-config', '/api-keys', '/metrics'])
+
+function ProtectedRoute({ children }: { children: ReactNode }) {
   const { status, role, organizationSetupComplete } = useAuth()
   const location = useLocation()
 
@@ -40,10 +43,12 @@ function ProtectedRoute({ children, navItem }: { children: ReactNode; navItem?: 
   if (!organizationSetupComplete && location.pathname !== '/onboarding') {
     return <Navigate to="/onboarding" replace />
   }
-  if (navItem && !canSeeNavItem(role, navItem)) {
+  if (ADMIN_ONLY_PATHS.has(location.pathname) && role !== 'admin') {
     return <Navigate to="/filings" replace />
   }
-  return <AppShell>{children}</AppShell>
+
+  const Shell = role === 'admin' ? AdminShell : UserShell
+  return <Shell>{children}</Shell>
 }
 
 // "/" is the public marketing page — an already-authenticated visitor
@@ -57,7 +62,7 @@ function HomeRoute() {
     return <div className="flex min-h-screen items-center justify-center bg-white text-slate-500">Loading…</div>
   }
   if (status === 'authenticated') {
-    return <Navigate to="/filings" replace />
+    return <RoleHomeRedirect />
   }
   return (
     <Suspense fallback={<div className="min-h-screen bg-white" />}>
@@ -66,12 +71,33 @@ function HomeRoute() {
   )
 }
 
+function RoleHomeRedirect() {
+  const { role } = useAuth()
+  return <Navigate to={role === 'admin' ? '/overview' : '/filings'} replace />
+}
+
 function App() {
   return (
     <AuthProvider>
       <Routes>
         <Route path="/" element={<HomeRoute />} />
         <Route path="/login" element={<Login />} />
+        <Route
+          path="/onboarding"
+          element={
+            <ProtectedRoute>
+              <Onboarding />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/overview"
+          element={
+            <ProtectedRoute>
+              <AdminOverview />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/filings"
           element={
@@ -91,7 +117,7 @@ function App() {
         <Route
           path="/activity"
           element={
-            <ProtectedRoute navItem="activity">
+            <ProtectedRoute>
               <Activity />
             </ProtectedRoute>
           }
@@ -99,7 +125,7 @@ function App() {
         <Route
           path="/search"
           element={
-            <ProtectedRoute navItem="search">
+            <ProtectedRoute>
               <Search />
             </ProtectedRoute>
           }
@@ -107,7 +133,7 @@ function App() {
         <Route
           path="/webhooks"
           element={
-            <ProtectedRoute navItem="webhooks">
+            <ProtectedRoute>
               <Webhooks />
             </ProtectedRoute>
           }
@@ -115,7 +141,7 @@ function App() {
         <Route
           path="/api-keys"
           element={
-            <ProtectedRoute navItem="api_keys">
+            <ProtectedRoute>
               <ApiKeys />
             </ProtectedRoute>
           }
@@ -123,7 +149,7 @@ function App() {
         <Route
           path="/metrics"
           element={
-            <ProtectedRoute navItem="metrics">
+            <ProtectedRoute>
               <Metrics />
             </ProtectedRoute>
           }
@@ -131,7 +157,7 @@ function App() {
         <Route
           path="/source-config"
           element={
-            <ProtectedRoute navItem="source_config">
+            <ProtectedRoute>
               <SourceConfig />
             </ProtectedRoute>
           }
@@ -147,16 +173,8 @@ function App() {
         <Route
           path="/users"
           element={
-            <ProtectedRoute navItem="users">
-              <Users />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/onboarding"
-          element={
             <ProtectedRoute>
-              <Onboarding />
+              <Users />
             </ProtectedRoute>
           }
         />
