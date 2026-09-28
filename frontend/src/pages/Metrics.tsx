@@ -23,12 +23,12 @@ interface MetricsSnapshot {
   avg_cost_per_filing_usd: MetricValue
 }
 
-interface FunnelStatusCount {
+export interface FunnelStatusCount {
   status: string
   count: number
 }
 
-interface FunnelResponse {
+export interface FunnelResponse {
   data: FunnelStatusCount[]
   total: number
 }

@@ -8,7 +8,7 @@ import { ApiError, apiFetch } from '../lib/api'
 
 type Role = 'admin' | 'analyst' | 'executive' | 'legal_counsel' | 'eng_lead'
 
-interface ApiKeyItem {
+export interface ApiKeyItem {
   id: string
   owner_label: string
   role: Role

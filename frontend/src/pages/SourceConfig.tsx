@@ -8,7 +8,7 @@ import { ApiError, apiFetch } from '../lib/api'
 type Source = 'SEC' | 'FDA' | 'FINRA'
 type Domain = 'financial' | 'clinical' | 'environmental' | 'engineering' | 'other'
 
-interface SourceConfigItem {
+export interface SourceConfigItem {
   source: Source
   domains: string[]
   is_active: boolean

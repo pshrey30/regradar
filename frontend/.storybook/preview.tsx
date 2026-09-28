@@ -1,4 +1,5 @@
 import type { Preview } from '@storybook/react-vite'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { mswLoader } from 'msw-storybook-addon/csf3'
 
 import '../src/index.css'
@@ -32,6 +33,21 @@ const preview: Preview = {
   beforeEach({ msw }) {
     msw.use(...handlers)
   },
+
+  // Pages that call useQuery need their own QueryClient in Storybook —
+  // the real app's QueryClient lives in main.tsx, which stories never
+  // render. `retry: false` so an ErrorState story fails fast on the first
+  // MSW error response instead of retrying for several seconds.
+  decorators: [
+    (Story) => {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      return (
+        <QueryClientProvider client={queryClient}>
+          <Story />
+        </QueryClientProvider>
+      )
+    },
+  ],
 };
 
 export default preview;
