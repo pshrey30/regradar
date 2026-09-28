@@ -70,7 +70,9 @@ export function Onboarding() {
     }
   }, [role])
 
-  const tourComplete = step === 'done' && tourIndex >= TOUR_STOPS.length
+  // tourIndex 0 is the "You're all set" intro screen; tourIndex 1..N map to
+  // TOUR_STOPS[0..N-1]. Total screens = TOUR_STOPS.length + 1 (the intro).
+  const tourComplete = step === 'done' && tourIndex >= TOUR_STOPS.length + 1
 
   useEffect(() => {
     if (!tourComplete) return
@@ -220,18 +222,18 @@ export function Onboarding() {
           </form>
         )}
 
-        {step === 'done' && tourIndex < TOUR_STOPS.length && (
+        {step === 'done' && tourIndex < TOUR_STOPS.length + 1 && (
           <div className="flex flex-col gap-4">
             <h1 className="text-xl font-semibold text-slate-900">
-              {tourIndex === 0 ? "You're all set" : TOUR_STOPS[tourIndex].title}
+              {tourIndex === 0 ? "You're all set" : TOUR_STOPS[tourIndex - 1].title}
             </h1>
             <p className="text-sm text-slate-600">
               {tourIndex === 0
                 ? "Your organization's profile is saved. Filings will now start getting scored against it. Here's a quick look at where things live."
-                : TOUR_STOPS[tourIndex].body}
+                : TOUR_STOPS[tourIndex - 1].body}
             </p>
             <Button variant="primary" size="lg" onClick={() => setTourIndex((i) => i + 1)}>
-              {tourIndex === TOUR_STOPS.length - 1 ? 'Go to dashboard' : 'Next'}
+              {tourIndex === TOUR_STOPS.length ? 'Go to dashboard' : 'Next'}
             </Button>
           </div>
         )}
