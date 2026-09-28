@@ -1,11 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { allowedDomainsForRole } from '../auth/domainScope'
 import { useAuth } from '../auth/useAuth'
 import { Badge, type DomainValue, type RiskLevel } from '../components/Badge'
 import { Card } from '../components/Card'
+import { Pagination } from '../components/Pagination'
 import { ApiError, apiFetch } from '../lib/api'
+
+const PAGE_SIZE = 20
 
 type Channel = 'slack' | 'email' | 'webhook'
 type Status = 'pending' | 'sent' | 'failed' | 'retrying'
@@ -22,6 +26,13 @@ interface ActivityItem {
   is_fallback: boolean
   at: string
   error_message: string | null
+}
+
+interface ActivityListResponse {
+  data: ActivityItem[]
+  page: number
+  page_size: number
+  total: number
 }
 
 const CHANNEL_LABELS: Record<Channel, string> = {
@@ -71,9 +82,11 @@ function StatusDot({ status, errorMessage }: { status: Status; errorMessage: str
 export function Activity() {
   const { role } = useAuth()
   const allowedDomains = allowedDomainsForRole(role)
+  const [page, setPage] = useState(1)
   const query = useQuery({
-    queryKey: ['activity'],
-    queryFn: () => apiFetch<ActivityItem[]>('/v1/activity'),
+    queryKey: ['activity', page],
+    queryFn: () =>
+      apiFetch<ActivityListResponse>(`/v1/activity?page=${page}&page_size=${PAGE_SIZE}`),
     // Alerts land continuously as new filings are processed — keep this
     // feed reasonably fresh without the user needing to manually refresh.
     refetchInterval: 30_000,
@@ -102,7 +115,7 @@ export function Activity() {
         </Card>
       )}
 
-      {query.isSuccess && query.data.length === 0 && (
+      {query.isSuccess && query.data.data.length === 0 && (
         <Card>
           <p className="text-sm text-slate-500">
             No alerts have gone out yet. They&rsquo;ll show up here the moment a filing is
@@ -111,9 +124,9 @@ export function Activity() {
         </Card>
       )}
 
-      {query.isSuccess && query.data.length > 0 && (
+      {query.isSuccess && query.data.data.length > 0 && (
         <div className="flex flex-col gap-2">
-          {query.data.map((item) => (
+          {query.data.data.map((item) => (
             <Card key={item.id}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
@@ -137,6 +150,12 @@ export function Activity() {
               </div>
             </Card>
           ))}
+          <Pagination
+            page={query.data.page}
+            pageSize={query.data.page_size}
+            total={query.data.total}
+            onPageChange={setPage}
+          />
         </div>
       )}
     </div>

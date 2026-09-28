@@ -13,11 +13,11 @@ import { FilingsList } from './pages/FilingsList'
 import { Login } from './pages/Login'
 import { Metrics } from './pages/Metrics'
 import { Onboarding } from './pages/Onboarding'
+import { Organization } from './pages/Organization'
 import { Profile } from './pages/Profile'
 import { Search } from './pages/Search'
 import { SourceConfig } from './pages/SourceConfig'
 import { Users } from './pages/Users'
-import { Webhooks } from './pages/Webhooks'
 
 // Landing pulls in three.js for its 3D hero (~600KB) — code-split so that
 // weight is only ever fetched by a logged-out visitor hitting "/", never
@@ -39,6 +39,7 @@ const RESTRICTED_PATHS: Record<string, Role[]> = {
   '/users': ['admin'],
   '/source-config': ['admin'],
   '/api-keys': ['admin'],
+  '/organization': ['admin'],
   '/metrics': ['admin', 'eng_lead'],
   '/search': ['admin', 'analyst', 'legal_counsel', 'eng_lead'], // everyone except executive
 }
@@ -145,14 +146,6 @@ function App() {
           }
         />
         <Route
-          path="/webhooks"
-          element={
-            <ProtectedRoute>
-              <Webhooks />
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="/api-keys"
           element={
             <ProtectedRoute>
@@ -189,6 +182,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Users />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/organization"
+          element={
+            <ProtectedRoute>
+              <Organization />
             </ProtectedRoute>
           }
         />

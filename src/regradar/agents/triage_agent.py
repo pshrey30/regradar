@@ -148,6 +148,23 @@ def _get_llm_client() -> tuple[OpenAI, str]:
     )
 
 
+def _strip_markdown_json_fence(content: str) -> str:
+    """Local Ollama models (unlike Groq under response_format enforcement)
+    routinely wrap JSON replies in a markdown code fence (```json ... ```
+    or plain ``` ... ```) despite the system prompt asking for "strict
+    JSON only" — live-verified: llama3.1 does this on every spot-check
+    call under USE_LOCAL_LLM=true, so the un-stripped content always
+    starts with a backtick and json.loads always fails at position 0
+    ("Expecting value: line 1 column 1"). This silently degraded every
+    low-confidence classification to the primary HF guess, since
+    spot_check_classification's contract is to return None (not raise)
+    on any parse failure."""
+    stripped = content.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    return stripped
+
+
 def spot_check_classification(text: str) -> SpotCheckResult | None:
     """Second-opinion classification + risk assessment for a low-confidence
     filing. Never raises — returns None on any request, parse, or
@@ -164,7 +181,7 @@ def spot_check_classification(text: str) -> SpotCheckResult | None:
             ],
             temperature=0,
         )
-        content = response.choices[0].message.content or ""
+        content = _strip_markdown_json_fence(response.choices[0].message.content or "")
         parsed = json.loads(content)
         return SpotCheckResult(
             domain=FilingDomain(parsed["domain"]),
@@ -215,10 +232,18 @@ def triage_node(state: PipelineState) -> PipelineState:
     If the HF classification's confidence is below
     settings.classification_confidence_threshold (AGENT-03), a second,
     independent spot-check model classifies the same filing and assigns
-    its own risk_level opinion. If the spot-check succeeds, the final
-    risk_level is whichever of the two is higher severity — domain
-    always stays HF's, only risk_level is reconciled. A spot-check
-    failure (returns None) leaves the HF-heuristic risk_level unchanged.
+    its own domain and risk_level opinion. If the spot-check succeeds,
+    its domain replaces the HF guess (the whole point of gating this on
+    low confidence is that the HF guess is not trustworthy there — live-
+    verified against this project's own SEC EDGAR fixtures: 5-way
+    zero-shot confidence sat at 0.21-0.33 uniformly across obviously
+    financial filings — JPMorgan/BofA/Barclays/Goldman Sachs notes and
+    fund prospectuses — and the spot-check model correctly called
+    "financial" every time once its JSON parsing was fixed, so trusting
+    it over a nearly-random HF guess is the correct call, not a
+    downgrade), and the final risk_level is whichever of the two is
+    higher severity. A spot-check failure (returns None) leaves the
+    HF-heuristic domain and risk_level unchanged.
     """
     try:
         result = classify_filing(state.raw_text)
@@ -228,6 +253,7 @@ def triage_node(state: PipelineState) -> PipelineState:
         )
         return state
 
+    domain = result.domain
     risk_level = derive_risk_level(result.domain, result.confidence, state.raw_text)
 
     settings = get_settings()
@@ -247,12 +273,13 @@ def triage_node(state: PipelineState) -> PipelineState:
                 spot_result.reasoning,
                 agreed,
             )
+            domain = spot_result.domain
             if SEVERITY_ORDER[spot_result.risk_level] > SEVERITY_ORDER[risk_level]:
                 risk_level = spot_result.risk_level
 
     return state.model_copy(
         update={
-            "domain": result.domain,
+            "domain": domain,
             "classification_confidence": result.confidence,
             "risk_level": risk_level,
         }

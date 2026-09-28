@@ -5,7 +5,6 @@ const BASE_USER_NAV_LINKS: NavLinkItem[] = [
   { path: '/filings', label: 'Filings' },
   { path: '/activity', label: 'Activity' },
   { path: '/search', label: 'Ask RegRadar' },
-  { path: '/webhooks', label: 'Webhooks' },
 ]
 
 const METRICS_LINK: NavLinkItem = { path: '/metrics', label: 'Metrics & Cost' }

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
 
+import { Avatar } from '../components/Avatar'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Input } from '../components/Input'
@@ -185,16 +186,19 @@ export function Profile() {
       {query.isSuccess && (
         <>
           <Card>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-              <dt className="text-slate-500">Role</dt>
-              <dd className="font-medium text-slate-900">{formatRole(query.data.role)}</dd>
-              {query.data.email && (
-                <>
-                  <dt className="text-slate-500">Email</dt>
-                  <dd className="font-medium text-slate-900">{query.data.email}</dd>
-                </>
-              )}
-            </dl>
+            <div className="flex items-center gap-4">
+              <Avatar name={query.data.display_name} size="lg" />
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+                <dt className="text-slate-500">Role</dt>
+                <dd className="font-medium text-slate-900">{formatRole(query.data.role)}</dd>
+                {query.data.email && (
+                  <>
+                    <dt className="text-slate-500">Email</dt>
+                    <dd className="font-medium text-slate-900">{query.data.email}</dd>
+                  </>
+                )}
+              </dl>
+            </div>
             <p className="mt-3 text-xs text-slate-400">
               Your role is managed by an Admin — see Manage Users if you need it changed.
             </p>

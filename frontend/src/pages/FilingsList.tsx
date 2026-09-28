@@ -6,8 +6,11 @@ import { useAuth } from '../auth/useAuth'
 import { Badge, type DomainValue, type RiskLevel } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
+import { Pagination } from '../components/Pagination'
 import { Table, type TableColumn } from '../components/Table'
 import { ApiError, apiFetch } from '../lib/api'
+
+const PAGE_SIZE = 20
 
 interface FilingListItem {
   id: string
@@ -42,11 +45,17 @@ const SOURCE_OPTIONS = ['SEC', 'FDA', 'FINRA'] as const
 const FILTER_KEYS = ['domain', 'risk', 'source', 'since', 'until'] as const
 type FilterKey = (typeof FILTER_KEYS)[number]
 
-function buildFilingsQuery(filters: Record<FilterKey, string>): string {
+function buildFilingsQuery(
+  filters: Record<FilterKey, string>,
+  page: number,
+  pageSize: number,
+): string {
   const params = new URLSearchParams()
   for (const key of FILTER_KEYS) {
     if (filters[key]) params.set(key, filters[key])
   }
+  params.set('page', String(page))
+  params.set('page_size', String(pageSize))
   return params.toString()
 }
 
@@ -125,14 +134,23 @@ const _STATUS_LABELS: Record<string, string> = {
   failed: 'Failed',
 }
 
+// Distinct colors per pending state so an Admin can tell "needs a human
+// decision" (needs_review) apart from "the classifier never ran"
+// (needs_classification) at a glance, instead of both reading as the same
+// generic amber "in progress" — they need different follow-up actions.
+const _STATUS_COLORS: Record<string, string> = {
+  failed: 'border-risk-critical text-risk-critical',
+  needs_review: 'border-risk-high text-risk-high-text',
+  needs_classification: 'border-primary-600 text-primary-700',
+  needs_organization_setup: 'border-risk-medium text-risk-medium-text',
+}
+const _DEFAULT_STATUS_COLOR = 'border-slate-400 text-slate-600'
+
 function PendingStatusBadge({ status }: { status: string }) {
-  const isFailed = status === 'failed'
   return (
     <span
       className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
-        isFailed
-          ? 'border-risk-critical text-risk-critical'
-          : 'border-risk-medium text-risk-medium'
+        _STATUS_COLORS[status] ?? _DEFAULT_STATUS_COLOR
       }`}
     >
       {_STATUS_LABELS[status] ?? status}
@@ -226,17 +244,27 @@ export function FilingsList() {
   const filters = Object.fromEntries(
     FILTER_KEYS.map((key) => [key, searchParams.get(key) ?? '']),
   ) as Record<FilterKey, string>
+  const page = Number(searchParams.get('page') ?? '1') || 1
 
   function updateFilter(key: FilterKey, value: string) {
     const next = new URLSearchParams(searchParams)
     if (value) next.set(key, value)
     else next.delete(key)
+    // Any filter change invalidates the current page position.
+    next.delete('page')
+    setSearchParams(next)
+  }
+
+  function updatePage(nextPage: number) {
+    const next = new URLSearchParams(searchParams)
+    next.set('page', String(nextPage))
     setSearchParams(next)
   }
 
   const query = useQuery({
-    queryKey: ['filings', filters],
-    queryFn: () => apiFetch<FilingListResponse>(`/v1/filings?${buildFilingsQuery(filters)}`),
+    queryKey: ['filings', filters, page],
+    queryFn: () =>
+      apiFetch<FilingListResponse>(`/v1/filings?${buildFilingsQuery(filters, page, PAGE_SIZE)}`),
   })
 
   const columns: TableColumn<FilingListItem>[] = [
@@ -311,18 +339,28 @@ export function FilingsList() {
           </Button>
         </div>
       ) : (
-        <Table
-          columns={columns}
-          data={query.data?.data ?? []}
-          getRowKey={(row) => row.id}
-          // isPending, not isLoading: isLoading (isPending && isFetching)
-          // briefly goes false during a retry's backoff delay even with no
-          // data yet, which would flash the empty-state message instead of
-          // the loading skeleton.
-          loading={query.isPending}
-          emptyMessage="No filings match the current filters."
-          onRowClick={(row) => navigate(`/filings/${row.id}`)}
-        />
+        <>
+          <Table
+            columns={columns}
+            data={query.data?.data ?? []}
+            getRowKey={(row) => row.id}
+            // isPending, not isLoading: isLoading (isPending && isFetching)
+            // briefly goes false during a retry's backoff delay even with no
+            // data yet, which would flash the empty-state message instead of
+            // the loading skeleton.
+            loading={query.isPending}
+            emptyMessage="No filings match the current filters."
+            onRowClick={(row) => navigate(`/filings/${row.id}`)}
+          />
+          {query.data && (
+            <Pagination
+              page={query.data.page}
+              pageSize={query.data.page_size}
+              total={query.data.total}
+              onPageChange={updatePage}
+            />
+          )}
+        </>
       )}
     </div>
   )

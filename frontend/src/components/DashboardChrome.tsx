@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 
 import { useAuth } from '../auth/useAuth'
 import { API_BASE_URL } from '../lib/api'
+import { Avatar } from './Avatar'
 import { Button } from './Button'
 
 export interface NavLinkItem {
@@ -50,9 +51,10 @@ function SignOutForm() {
     <div className="border-t border-slate-200 pt-4">
       <Link
         to="/profile"
-        className="mb-2 block truncate rounded-md px-1 text-xs text-slate-500 transition-colors hover:text-primary-600"
+        className="mb-2 flex items-center gap-2 truncate rounded-md px-1 py-1 text-xs text-slate-500 transition-colors hover:text-primary-600"
       >
-        {displayName}
+        <Avatar name={displayName ?? '?'} size="sm" />
+        <span className="truncate">{displayName}</span>
       </Link>
       <form action={`${API_BASE_URL}/v1/auth/logout`} method="POST">
         <Button type="submit" variant="ghost" size="sm" className="w-full">

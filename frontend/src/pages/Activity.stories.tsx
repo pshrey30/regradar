@@ -46,6 +46,13 @@ const failedFinancialAlert = {
   error_message: 'HTTP 500',
 }
 
+// GET /v1/activity now returns {data, page, page_size, total} (added for
+// pagination) rather than a bare array — every mock below wraps its items
+// in this shape.
+function activityPage(data: unknown[]) {
+  return { data, page: 1, page_size: 20, total: data.length }
+}
+
 const meta = {
   title: 'Pages/Activity',
   component: Activity,
@@ -81,7 +88,7 @@ export const Populated: Story = {
   beforeEach({ msw }) {
     msw.use(
       http.get('*/v1/activity', () =>
-        HttpResponse.json([sentEngineeringAlert, failedFinancialAlert]),
+        HttpResponse.json(activityPage([sentEngineeringAlert, failedFinancialAlert])),
       ),
     )
   },
@@ -89,7 +96,7 @@ export const Populated: Story = {
 
 export const Empty: Story = {
   beforeEach({ msw }) {
-    msw.use(http.get('*/v1/activity', () => HttpResponse.json([])))
+    msw.use(http.get('*/v1/activity', () => HttpResponse.json(activityPage([]))))
   },
 }
 
@@ -119,7 +126,7 @@ export const AsAdmin: Story = {
   beforeEach({ msw }) {
     msw.use(
       http.get('*/v1/activity', () =>
-        HttpResponse.json([sentEngineeringAlert, failedFinancialAlert]),
+        HttpResponse.json(activityPage([sentEngineeringAlert, failedFinancialAlert])),
       ),
     )
   },
@@ -144,7 +151,7 @@ export const AsEngLead: Story = {
   beforeEach({ msw }) {
     msw.use(
       http.get('*/v1/activity', () =>
-        HttpResponse.json([sentEngineeringAlert, failedFinancialAlert]),
+        HttpResponse.json(activityPage([sentEngineeringAlert, failedFinancialAlert])),
       ),
     )
   },

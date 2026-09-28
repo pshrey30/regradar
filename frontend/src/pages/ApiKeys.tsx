@@ -4,7 +4,10 @@ import { useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Modal } from '../components/Modal'
+import { Pagination } from '../components/Pagination'
 import { ApiError, apiFetch } from '../lib/api'
+
+const PAGE_SIZE = 10
 
 type Role = 'admin' | 'analyst' | 'executive' | 'legal_counsel' | 'eng_lead'
 
@@ -205,11 +208,13 @@ function RevokeApiKeyModal({ apiKey, onClose }: { apiKey: ApiKeyItem | null; onC
 export function ApiKeys() {
   const [createOpen, setCreateOpen] = useState(false)
   const [keyToRevoke, setKeyToRevoke] = useState<ApiKeyItem | null>(null)
+  const [page, setPage] = useState(1)
 
   const query = useQuery({
     queryKey: ['api-keys'],
     queryFn: () => apiFetch<ApiKeyItem[]>('/v1/api-keys'),
   })
+  const pagedKeys = (query.data ?? []).slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   // A 403 here means this session's role can't manage API keys at all
   // (e.g. reached via a stale bookmark before a role change) — no action
@@ -257,7 +262,7 @@ export function ApiKeys() {
 
       {query.isSuccess && query.data.length > 0 && (
         <div className="flex flex-col gap-3">
-          {query.data.map((apiKey) => (
+          {pagedKeys.map((apiKey) => (
             <Card key={apiKey.id}>
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0 flex-1">
@@ -296,6 +301,12 @@ export function ApiKeys() {
               </div>
             </Card>
           ))}
+          <Pagination
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={query.data.length}
+            onPageChange={setPage}
+          />
         </div>
       )}
 

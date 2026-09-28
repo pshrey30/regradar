@@ -13,39 +13,49 @@ Engineering alerts only, never Financial or Clinical.
 """
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql import func
 
 from regradar.api.deps import AuthenticatedKey
 from regradar.api.middleware.rate_limit import enforce_rate_limit, get_authenticated_db
 from regradar.core.domain_scope import allowed_domains_for_role
 from regradar.models.delivery import Delivery
 from regradar.models.filing import Filing
-from regradar.schemas.activity import ActivityItem
+from regradar.schemas.activity import ActivityItem, ActivityListResponse
 
 router = APIRouter()
 
 
-@router.get("/v1/activity", response_model=list[ActivityItem])
+@router.get("/v1/activity", response_model=ActivityListResponse)
 async def list_activity(
-    limit: int = Query(default=30, ge=1, le=100),
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=20, ge=1, le=100),
     key: AuthenticatedKey = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_authenticated_db),
-) -> list[ActivityItem]:
+) -> ActivityListResponse:
     at = func.coalesce(Delivery.sent_at, Delivery.created_at)
-    stmt = (
+    allowed_domains = allowed_domains_for_role(key.role)
+
+    base_stmt = select(Delivery).join(Filing, Filing.id == Delivery.filing_id)
+    if allowed_domains is not None:
+        base_stmt = base_stmt.where(Filing.domain.in_(allowed_domains))
+
+    total = (
+        await db.execute(select(func.count()).select_from(base_stmt.subquery()))
+    ).scalar_one()
+
+    page_stmt = (
         select(Delivery, Filing.entity_name, Filing.filing_type, Filing.domain, Filing.risk_level, at)
         .join(Filing, Filing.id == Delivery.filing_id)
         .order_by(at.desc())
-        .limit(limit)
+        .limit(page_size)
+        .offset((page - 1) * page_size)
     )
-    allowed_domains = allowed_domains_for_role(key.role)
     if allowed_domains is not None:
-        stmt = stmt.where(Filing.domain.in_(allowed_domains))
-    rows = (await db.execute(stmt)).all()
+        page_stmt = page_stmt.where(Filing.domain.in_(allowed_domains))
+    rows = (await db.execute(page_stmt)).all()
 
-    return [
+    data = [
         ActivityItem(
             id=delivery.id,
             filing_id=delivery.filing_id,
@@ -61,3 +71,5 @@ async def list_activity(
         )
         for delivery, entity_name, filing_type, domain, risk_level, at_value in rows
     ]
+
+    return ActivityListResponse(data=data, page=page, page_size=page_size, total=total)

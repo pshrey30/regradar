@@ -109,7 +109,7 @@ def test_activity_visible_to_every_role(monkeypatch: pytest.MonkeyPatch):
     )
 
     assert response.status_code == 200
-    body = response.json()[0]
+    body = response.json()["data"][0]
     assert body["entity_name"] == "Acme Financial Corp"
     assert body["channel"] == "slack"
     assert body["status"] == "sent"
@@ -131,7 +131,7 @@ def test_activity_falls_back_to_created_at_when_never_sent(monkeypatch: pytest.M
     )
 
     assert response.status_code == 200
-    body = response.json()[0]
+    body = response.json()["data"][0]
     assert body["status"] == "failed"
     assert body["at"].startswith("2026-01-03")
 
@@ -153,7 +153,7 @@ def test_activity_includes_error_message_on_failed_delivery(monkeypatch: pytest.
     )
 
     assert response.status_code == 200
-    assert response.json()[0]["error_message"] == "HTTP 500"
+    assert response.json()["data"][0]["error_message"] == "HTTP 500"
 
 
 def test_activity_error_message_is_null_on_sent_delivery(monkeypatch: pytest.MonkeyPatch):
@@ -170,7 +170,7 @@ def test_activity_error_message_is_null_on_sent_delivery(monkeypatch: pytest.Mon
     )
 
     assert response.status_code == 200
-    assert response.json()[0]["error_message"] is None
+    assert response.json()["data"][0]["error_message"] is None
 
 
 def test_activity_eng_lead_query_restricted_to_engineering_domain(
@@ -200,12 +200,27 @@ def test_activity_admin_query_is_domain_unrestricted(monkeypatch: pytest.MonkeyP
     assert "domain IN" not in compiled
 
 
-def test_activity_rejects_limit_out_of_bounds(monkeypatch: pytest.MonkeyPatch):
+def test_activity_rejects_page_size_out_of_bounds(monkeypatch: pytest.MonkeyPatch):
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
     _mock_activity_db(monkeypatch, rows=[])
 
     response = TestClient(create_app()).get(
-        "/v1/activity?limit=500", headers={"Authorization": "Bearer rr_test-key"}
+        "/v1/activity?page_size=500", headers={"Authorization": "Bearer rr_test-key"}
     )
 
     assert response.status_code == 422
+
+
+def test_activity_response_includes_pagination_fields(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ANALYST)
+    _mock_activity_db(monkeypatch, rows=[])
+
+    response = TestClient(create_app()).get(
+        "/v1/activity?page=2&page_size=10", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["page"] == 2
+    assert body["page_size"] == 10
+    assert "total" in body

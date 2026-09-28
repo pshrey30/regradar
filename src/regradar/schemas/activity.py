@@ -27,3 +27,10 @@ class ActivityItem(BaseModel):
     # None for everything else, including rows written before this field
     # existed.
     error_message: str | None
+
+
+class ActivityListResponse(BaseModel):
+    data: list[ActivityItem]
+    page: int
+    page_size: int
+    total: int

@@ -9,7 +9,7 @@ const ADMIN_NAV_LINKS = [
   { path: '/source-config', label: 'Source Configuration' },
   { path: '/api-keys', label: 'API Keys' },
   { path: '/metrics', label: 'Metrics & Cost' },
-  { path: '/webhooks', label: 'Webhooks' },
+  { path: '/organization', label: 'Organization' },
 ]
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
