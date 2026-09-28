@@ -60,14 +60,16 @@ function TeamPanel() {
           Manage users →
         </Link>
       </div>
-      <Table
-        data={query.data ?? []}
-        columns={columns}
-        getRowKey={(row) => row.id}
-        loading={query.isPending}
-        emptyMessage="No team members yet."
-      />
-      {query.isError && <p className="mt-2 text-sm text-risk-critical">Couldn't load the team roster.</p>}
+      {query.isError && <p className="text-sm text-risk-critical">Couldn't load the team roster.</p>}
+      {!query.isError && (
+        <Table
+          data={query.data ?? []}
+          columns={columns}
+          getRowKey={(row) => row.id}
+          loading={query.isPending}
+          emptyMessage="No team members yet."
+        />
+      )}
     </Card>
   )
 }

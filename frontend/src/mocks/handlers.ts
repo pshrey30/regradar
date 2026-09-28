@@ -1,10 +1,12 @@
 import { http, HttpResponse } from 'msw'
 
 // Every handler here is a REASONABLE DEFAULT for a story that doesn't
-// care about this endpoint's exact response — individual stories
-// override via their own `parameters.msw.handlers` array (MSW's
-// per-story override convention), which takes precedence over these.
-// Wildcard base (`*/v1/...`) so this works regardless of how
+// care about this endpoint's exact response. These are installed
+// globally in `.storybook/preview.ts` via `beforeEach({ msw }) { msw.use(...handlers) }`.
+// Individual stories override a specific endpoint the same way, in their
+// own `beforeEach({ msw }) { msw.use(...) }` — MSW's `msw.use()` handlers
+// take precedence over the ones installed here, for the duration of that
+// story only. Wildcard base (`*/v1/...`) so this works regardless of how
 // API_BASE_URL resolves inside Storybook's browser context.
 
 export const handlers = [

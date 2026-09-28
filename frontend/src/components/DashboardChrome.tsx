@@ -1,9 +1,48 @@
 import { useState, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 
 import { useAuth } from '../auth/useAuth'
 import { API_BASE_URL } from '../lib/api'
 import { Button } from './Button'
+
+export interface NavLinkItem {
+  path: string
+  label: string
+}
+
+// Shared rendering used by both AdminShell and UserShell — only the
+// rendering logic lives here, never the link arrays themselves. Each
+// shell keeps its own distinct link array so a User bundle never ends up
+// containing the Admin link array.
+export function NavLinks({ items, onNavigate }: { items: NavLinkItem[]; onNavigate?: () => void }) {
+  const location = useLocation()
+  return (
+    <ul className="flex flex-1 flex-col gap-1">
+      {items.map((item) => {
+        const isActive = item.path === location.pathname
+        return (
+          <li key={item.path} className="relative">
+            <Link
+              to={item.path}
+              onClick={onNavigate}
+              className={[
+                'block rounded-md px-3 py-2 text-sm transition-all duration-150',
+                isActive
+                  ? 'bg-primary-50 font-medium text-primary-700 translate-x-0.5'
+                  : 'text-slate-600 hover:translate-x-0.5 hover:bg-slate-100',
+              ].join(' ')}
+            >
+              {item.label}
+            </Link>
+            {isActive && (
+              <span className="absolute -left-1 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary-600" />
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
 
 function SignOutForm() {
   const { displayName } = useAuth()

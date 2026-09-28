@@ -3,7 +3,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
 import { AdminShell } from './components/AdminShell'
 import { UserShell } from './components/UserShell'
-import { AuthProvider } from './auth/AuthContext'
+import { AuthProvider, type Role } from './auth/AuthContext'
 import { useAuth } from './auth/useAuth'
 import { Activity } from './pages/Activity'
 import { AdminOverview } from './pages/AdminOverview'
@@ -25,10 +25,23 @@ import { Webhooks } from './pages/Webhooks'
 const Landing = lazy(() => import('./pages/Landing').then((m) => ({ default: m.Landing })))
 
 // Admin-only routes render inside AdminShell; every other authenticated
-// role renders inside UserShell. A route not listed in adminOnly is
-// reachable by any authenticated role that also isn't gated elsewhere
-// (Onboarding has its own internal role branch, unaffected by this).
-const ADMIN_ONLY_PATHS = new Set(['/overview', '/users', '/source-config', '/api-keys', '/metrics'])
+// role renders inside UserShell. A route not listed here is reachable by
+// any authenticated role that also isn't gated elsewhere (Onboarding has
+// its own internal role branch, unaffected by this).
+//
+// This mirrors the old (deleted) `_NAV_ITEM_ROLES` map from useAuth.ts,
+// which allowed partial, non-admin-only access to some routes (e.g.
+// eng_lead could reach Metrics; every role except executive could reach
+// Search). A flat admin-only set can't express that, so this is a map of
+// path -> allowed roles instead.
+const RESTRICTED_PATHS: Record<string, Role[]> = {
+  '/overview': ['admin'],
+  '/users': ['admin'],
+  '/source-config': ['admin'],
+  '/api-keys': ['admin'],
+  '/metrics': ['admin', 'eng_lead'],
+  '/search': ['admin', 'analyst', 'legal_counsel', 'eng_lead'], // everyone except executive
+}
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { status, role, organizationSetupComplete } = useAuth()
@@ -43,7 +56,8 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
   if (!organizationSetupComplete && location.pathname !== '/onboarding') {
     return <Navigate to="/onboarding" replace />
   }
-  if (ADMIN_ONLY_PATHS.has(location.pathname) && role !== 'admin') {
+  const allowedRoles = RESTRICTED_PATHS[location.pathname]
+  if (allowedRoles && role && !allowedRoles.includes(role)) {
     return <Navigate to="/filings" replace />
   }
 

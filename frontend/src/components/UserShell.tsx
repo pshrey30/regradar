@@ -1,42 +1,28 @@
-import { Link, useLocation } from 'react-router-dom'
+import { useAuth } from '../auth/useAuth'
+import { DashboardChrome, NavLinks, type NavLinkItem } from './DashboardChrome'
 
-import { DashboardChrome } from './DashboardChrome'
-
-const USER_NAV_LINKS = [
+const BASE_USER_NAV_LINKS: NavLinkItem[] = [
   { path: '/filings', label: 'Filings' },
   { path: '/activity', label: 'Activity' },
   { path: '/search', label: 'Ask RegRadar' },
   { path: '/webhooks', label: 'Webhooks' },
 ]
 
+const METRICS_LINK: NavLinkItem = { path: '/metrics', label: 'Metrics & Cost' }
+
 function UserNavLinks({ onNavigate }: { onNavigate?: () => void }) {
-  const location = useLocation()
-  return (
-    <ul className="flex flex-1 flex-col gap-1">
-      {USER_NAV_LINKS.map((item) => {
-        const isActive = item.path === location.pathname
-        return (
-          <li key={item.path} className="relative">
-            <Link
-              to={item.path}
-              onClick={onNavigate}
-              className={[
-                'block rounded-md px-3 py-2 text-sm transition-all duration-150',
-                isActive
-                  ? 'bg-primary-50 font-medium text-primary-700 translate-x-0.5'
-                  : 'text-slate-600 hover:translate-x-0.5 hover:bg-slate-100',
-              ].join(' ')}
-            >
-              {item.label}
-            </Link>
-            {isActive && (
-              <span className="absolute -left-1 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary-600" />
-            )}
-          </li>
-        )
-      })}
-    </ul>
-  )
+  const { role } = useAuth()
+
+  // Search (backend: POST /v1/filings/search) 403s for executive, so the
+  // link is hidden for that role rather than left as a dead end. Metrics
+  // (backend: admin-or-eng_lead) is added only for eng_lead — admin
+  // already gets it via AdminShell's own link array.
+  const links = BASE_USER_NAV_LINKS.filter((item) => !(item.path === '/search' && role === 'executive'))
+  if (role === 'eng_lead') {
+    links.push(METRICS_LINK)
+  }
+
+  return <NavLinks items={links} onNavigate={onNavigate} />
 }
 
 export function UserShell({ children }: { children: React.ReactNode }) {
