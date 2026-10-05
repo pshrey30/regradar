@@ -2,6 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# See Dockerfile.api's comment — same pystemmer-needs-a-compiler issue.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml ./
 COPY src ./src
 

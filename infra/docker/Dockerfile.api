@@ -2,6 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# build-essential (gcc etc.) — python:3.11-slim ships no compiler, and at
+# least one transitive dependency (pystemmer) has no prebuilt wheel for
+# every platform this image gets built on, so pip falls back to compiling
+# its C extension from source. Live-verified: the image fails to build
+# without this on arm64 with "gcc: No such file or directory".
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml alembic.ini ./
 COPY src ./src
 COPY migrations ./migrations

@@ -25,7 +25,14 @@ services:
       timeout: 5s
       retries: 10
 
+  # `image:` + `build:` together on api/worker (migrate reuses the api
+  # image): a new developer can `docker compose pull` to grab the images
+  # already published by .github/workflows/docker-publish.yml from GHCR —
+  # no local build, no Python toolchain needed — then `docker compose up`.
+  # Anyone actively changing app code still gets the old
+  # `docker compose up --build` behavior unchanged.
   migrate:
+    image: ghcr.io/pshrey30/regradar-api:latest
     build:
       context: ..
       dockerfile: infra/docker/Dockerfile.api
@@ -37,6 +44,7 @@ services:
         condition: service_healthy
 
   api:
+    image: ghcr.io/pshrey30/regradar-api:latest
     build:
       context: ..
       dockerfile: infra/docker/Dockerfile.api
@@ -54,6 +62,7 @@ services:
         condition: service_completed_successfully
 
   worker:
+    image: ghcr.io/pshrey30/regradar-worker:latest
     build:
       context: ..
       dockerfile: infra/docker/Dockerfile.worker
