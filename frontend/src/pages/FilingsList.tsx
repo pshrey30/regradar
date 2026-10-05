@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { allowedDomainsForRole } from '../auth/domainScope'
@@ -8,9 +9,14 @@ import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Pagination } from '../components/Pagination'
 import { Table, type TableColumn } from '../components/Table'
+import { useLiveFilingStatus } from '../hooks/useLiveFilingStatus'
 import { ApiError, apiFetch } from '../lib/api'
+import { FILING_STATUS_LABELS } from '../lib/filingStatus'
 
-const PAGE_SIZE = 20
+// Kept small enough that a full page of rows fits on screen without the
+// table itself needing to scroll before the Pagination controls come into
+// view — the whole page should scroll, never a nested section.
+const PAGE_SIZE = 10
 
 interface FilingListItem {
   id: string
@@ -121,40 +127,99 @@ interface PendingFilingItem {
   processing_error: string | null
 }
 
-const _STATUS_LABELS: Record<string, string> = {
-  ingested: 'Ingested',
-  classifying: 'Classifying',
-  needs_classification: 'Needs classification',
-  needs_review: 'Needs review',
-  needs_organization_setup: 'Needs organization setup',
-  retrieving: 'Retrieving',
-  analyzing: 'Analyzing',
-  summarizing: 'Summarizing',
-  delivering: 'Delivering',
-  failed: 'Failed',
+interface PendingFilingsResponse {
+  data: PendingFilingItem[]
+  page: number
+  page_size: number
+  total: number
 }
+
+const PENDING_PAGE_SIZE = 10
 
 // Distinct colors per pending state so an Admin can tell "needs a human
 // decision" (needs_review) apart from "the classifier never ran"
 // (needs_classification) at a glance, instead of both reading as the same
 // generic amber "in progress" — they need different follow-up actions.
+// The mid-pipeline states (retrieving/analyzing/summarizing/delivering)
+// share one "actively working" color rather than each getting their own,
+// since none of them needs a distinct follow-up action the way
+// needs_review/needs_classification do.
 const _STATUS_COLORS: Record<string, string> = {
   failed: 'border-risk-critical text-risk-critical',
   needs_review: 'border-risk-high text-risk-high-text',
   needs_classification: 'border-primary-600 text-primary-700',
   needs_organization_setup: 'border-risk-medium text-risk-medium-text',
+  classifying: 'border-primary-600 text-primary-700',
+  retrieving: 'border-primary-600 text-primary-700',
+  analyzing: 'border-primary-600 text-primary-700',
+  summarizing: 'border-primary-600 text-primary-700',
+  delivering: 'border-primary-600 text-primary-700',
 }
 const _DEFAULT_STATUS_COLOR = 'border-slate-400 text-slate-600'
+// Pipeline stages worth a small pulsing dot — this is what makes "the
+// pipeline is actively working on this filing right now" visible at a
+// glance, distinct from a static/stuck state like needs_review.
+const _ACTIVE_STATUSES = new Set([
+  'classifying',
+  'retrieving',
+  'analyzing',
+  'summarizing',
+  'delivering',
+])
 
 function PendingStatusBadge({ status }: { status: string }) {
+  const isActive = _ACTIVE_STATUSES.has(status)
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${
         _STATUS_COLORS[status] ?? _DEFAULT_STATUS_COLOR
       }`}
     >
-      {_STATUS_LABELS[status] ?? status}
+      {isActive && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-600" />}
+      {FILING_STATUS_LABELS[status] ?? status}
     </span>
+  )
+}
+
+// One row of the pending-processing panel below. Its own status/ws
+// connection (the same one FilingDetail.tsx uses) makes each stage of the
+// pipeline visible live, pixel by pixel, as it happens — REST's `status`
+// prop is only the last-known value from the panel's own poll/refetch, so
+// the live value (once the socket delivers one) always wins.
+function PendingFilingRow({
+  filing,
+  isProcessing,
+  disabled,
+  onProcessNow,
+  onLiveStatusChange,
+}: {
+  filing: PendingFilingItem
+  isProcessing: boolean
+  disabled: boolean
+  onProcessNow: () => void
+  onLiveStatusChange: () => void
+}) {
+  const liveStatus = useLiveFilingStatus(filing.id, onLiveStatusChange)
+  const displayedStatus = liveStatus ?? filing.status
+
+  return (
+    <div className="flex items-center justify-between gap-3 py-2">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="truncate font-medium text-slate-900">{filing.entity_name}</span>
+          <span className="text-sm text-slate-500">{filing.filing_type}</span>
+          <PendingStatusBadge status={displayedStatus} />
+        </div>
+        {displayedStatus === 'failed' && filing.processing_error && (
+          <p className="mt-0.5 truncate text-xs text-risk-critical" title={filing.processing_error}>
+            {filing.processing_error}
+          </p>
+        )}
+      </div>
+      <Button variant="secondary" size="sm" loading={isProcessing} disabled={disabled} onClick={onProcessNow}>
+        Process now
+      </Button>
+    </div>
   )
 }
 
@@ -163,25 +228,38 @@ function PendingStatusBadge({ status }: { status: string }) {
 // stuck earlier in the pipeline is invisible there by construction. This
 // panel is the only place in the UI that surfaces it, via the separate
 // admin-only /v1/filings/pending endpoint. Ingestion never auto-triggers
-// processing (a deliberate, cost-gated choice — see the CLI's
-// process-pending command); this is where an admin acts on that manually.
+// processing by itself, but "Fetch now" (SourceConfig.tsx) does hand every
+// pending filing to the pipeline in the background after fetching — this
+// panel's own "Process now" per row remains for manual retries/re-runs.
 function PendingFilingsPanel() {
   const queryClient = useQueryClient()
+  const [page, setPage] = useState(1)
   const query = useQuery({
-    queryKey: ['filings-pending'],
-    queryFn: () => apiFetch<{ data: PendingFilingItem[] }>('/v1/filings/pending'),
+    queryKey: ['filings-pending', page],
+    queryFn: () =>
+      apiFetch<PendingFilingsResponse>(
+        `/v1/filings/pending?page=${page}&page_size=${PENDING_PAGE_SIZE}`,
+      ),
+    // Short enough that a filing "Fetch now" just created (or a Process
+    // now that just started elsewhere) shows up here without a manual
+    // refresh — each row's own status/ws is what makes the pipeline
+    // stages inside it live; this interval is only for the pending *set*
+    // itself changing (new filings arriving, complete ones dropping off).
+    refetchInterval: 5000,
   })
+
+  function invalidate() {
+    queryClient.invalidateQueries({ queryKey: ['filings-pending'] })
+    queryClient.invalidateQueries({ queryKey: ['filings'] })
+  }
 
   const processMutation = useMutation({
     mutationFn: (id: string) =>
       apiFetch<{ id: string; status: string }>(`/v1/filings/${id}/process`, { method: 'POST' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['filings-pending'] })
-      queryClient.invalidateQueries({ queryKey: ['filings'] })
-    },
+    onSuccess: invalidate,
   })
 
-  if (query.isPending || query.isError || (query.data?.data.length ?? 0) === 0) {
+  if (query.isPending || query.isError || (query.data?.total ?? 0) === 0) {
     return null
   }
 
@@ -190,7 +268,7 @@ function PendingFilingsPanel() {
       <div className="flex flex-col gap-3">
         <div>
           <h2 className="text-sm font-semibold text-slate-900">
-            Pending processing ({query.data.data.length})
+            Pending processing ({query.data.total})
           </h2>
           <p className="text-sm text-slate-500">
             Ingested but not yet summarized or delivered — run the pipeline manually below, or
@@ -198,38 +276,27 @@ function PendingFilingsPanel() {
           </p>
         </div>
         <div className="flex flex-col divide-y divide-slate-200">
-          {query.data.data.map((filing) => {
-            const isProcessingThis =
-              processMutation.isPending && processMutation.variables === filing.id
-            return (
-              <div key={filing.id} className="flex items-center justify-between gap-3 py-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-medium text-slate-900">
-                      {filing.entity_name}
-                    </span>
-                    <span className="text-sm text-slate-500">{filing.filing_type}</span>
-                    <PendingStatusBadge status={filing.status} />
-                  </div>
-                  {filing.status === 'failed' && filing.processing_error && (
-                    <p className="mt-0.5 truncate text-xs text-risk-critical" title={filing.processing_error}>
-                      {filing.processing_error}
-                    </p>
-                  )}
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  loading={isProcessingThis}
-                  disabled={processMutation.isPending}
-                  onClick={() => processMutation.mutate(filing.id)}
-                >
-                  Process now
-                </Button>
-              </div>
-            )
-          })}
+          {query.data.data.map((filing) => (
+            <PendingFilingRow
+              key={filing.id}
+              filing={filing}
+              isProcessing={processMutation.isPending && processMutation.variables === filing.id}
+              disabled={processMutation.isPending}
+              onProcessNow={() => processMutation.mutate(filing.id)}
+              // A filing reaching "complete" drops off this endpoint
+              // entirely (see this function's own docstring) — invalidating
+              // on every live status change is what removes its row (or
+              // picks up a fresh processing_error once it's "failed").
+              onLiveStatusChange={invalidate}
+            />
+          ))}
         </div>
+        <Pagination
+          page={query.data.page}
+          pageSize={query.data.page_size}
+          total={query.data.total}
+          onPageChange={setPage}
+        />
       </div>
     </Card>
   )

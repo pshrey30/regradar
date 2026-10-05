@@ -1,7 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
 
-import { Avatar } from '../components/Avatar'
+import {
+  AVATAR_PALETTE,
+  Avatar,
+  getSavedAvatarColor,
+  setSavedAvatarColor,
+  type AvatarColor,
+} from '../components/Avatar'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Input } from '../components/Input'
@@ -20,6 +26,38 @@ function formatRole(role: string): string {
     .split('_')
     .map((word) => word[0].toUpperCase() + word.slice(1))
     .join(' ')
+}
+
+// Per-browser only (see Avatar.tsx) — no backend field exists for this.
+// Clicking a swatch updates this page's own avatar immediately; every
+// other place Avatar renders (sidebar, Users roster) picks it up the next
+// time it renders, since they all read the same localStorage key.
+function AvatarPicker({ name }: { name: string }) {
+  const [color, setColor] = useState<AvatarColor | null>(() => getSavedAvatarColor(name))
+
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <Avatar name={name} size="lg" colorOverride={color ?? undefined} />
+      <div className="flex gap-1.5">
+        {AVATAR_PALETTE.map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-label={`Use ${option.replace('bg-', '')} avatar color`}
+            onClick={() => {
+              setSavedAvatarColor(name, option)
+              setColor(option)
+            }}
+            className={[
+              'h-5 w-5 rounded-full transition-transform hover:scale-110',
+              option,
+              (color ?? undefined) === option ? 'ring-2 ring-offset-2 ring-slate-900' : '',
+            ].join(' ')}
+          />
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function NameForm({ me }: { me: MeResponse }) {
@@ -187,7 +225,7 @@ export function Profile() {
         <>
           <Card>
             <div className="flex items-center gap-4">
-              <Avatar name={query.data.display_name} size="lg" />
+              <AvatarPicker name={query.data.display_name} />
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
                 <dt className="text-slate-500">Role</dt>
                 <dd className="font-medium text-slate-900">{formatRole(query.data.role)}</dd>

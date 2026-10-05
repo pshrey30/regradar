@@ -1,11 +1,18 @@
 """Pydantic response models for GET /v1/filings and GET /v1/filings/{id}."""
 
+import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from regradar.models.enums import FilingDomain, FilingStatus, RiskLevel
+from regradar.models.enums import DeliveryStatus, FilingDomain, FilingStatus, RiskLevel
+
+# Same pattern as schemas/auth.py's _normalize_and_validate_email — kept
+# as its own small copy rather than importing a signup-specific private
+# helper from an unrelated module for what's really just "is this
+# syntactically an email address," not an auth concern.
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class FilingListItem(BaseModel):
@@ -41,6 +48,9 @@ class PendingFilingItem(BaseModel):
 
 class PendingFilingsResponse(BaseModel):
     data: list[PendingFilingItem]
+    page: int
+    page_size: int
+    total: int
 
 
 class ProcessFilingResponse(BaseModel):
@@ -109,3 +119,20 @@ class SearchResponse(BaseModel):
 class PersonaBriefResponse(BaseModel):
     persona: str
     summary: str
+
+
+class ManualAlertRequest(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, value: str) -> str:
+        if not _EMAIL_PATTERN.match(value):
+            raise ValueError("Not a valid email address")
+        return value.lower()
+
+
+class ManualAlertResponse(BaseModel):
+    status: DeliveryStatus
+    recipient: str
+    error_message: str | None = None

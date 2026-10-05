@@ -1,11 +1,15 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
+import { useAuth } from '../auth/useAuth'
 import { Badge, type DomainValue, type RiskLevel } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
-import { API_BASE_URL, ApiError, apiFetch } from '../lib/api'
+import { SendAlertModal } from '../components/SendAlertModal'
+import { useLiveFilingStatus } from '../hooks/useLiveFilingStatus'
+import { ApiError, apiFetch } from '../lib/api'
+import { FILING_STATUS_LABELS } from '../lib/filingStatus'
 
 interface Obligation {
   description: string
@@ -62,29 +66,6 @@ const PERSONA_TABS: { key: PersonaTab; label: string }[] = [
   { key: 'analyst', label: 'Analyst' },
   { key: 'engineer', label: 'Engineer' },
 ]
-
-const STATUS_LABELS: Record<string, string> = {
-  ingested: 'Ingested',
-  classifying: 'Classifying',
-  needs_classification: 'Needs classification',
-  needs_review: 'Needs review',
-  needs_organization_setup: 'Needs organization setup',
-  retrieving: 'Retrieving context',
-  analyzing: 'Analyzing',
-  summarizing: 'Summarizing',
-  delivering: 'Delivering',
-  complete: 'Complete',
-  failed: 'Failed',
-}
-
-// FE-04's ticket calls for Supabase Realtime, but this deployment's
-// Postgres is local Docker, not a real Supabase project (see migration
-// 0016's docstring) — this derives our own backend's WebSocket URL from
-// the same API_BASE_URL every other request already uses.
-function statusWebSocketUrl(filingId: string): string {
-  const wsBase = API_BASE_URL.replace(/^http/, 'ws')
-  return `${wsBase}/v1/filings/${filingId}/status/ws`
-}
 
 function PersonaBrief({ filingId, persona }: { filingId: string; persona: PersonaTab }) {
   const query = useQuery({
@@ -157,9 +138,10 @@ function ObligationsAndDeadlines({ extraction }: { extraction: Extraction }) {
 
 export function FilingDetail() {
   const { filingId } = useParams<{ filingId: string }>()
+  const { role } = useAuth()
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<PersonaTab>('executive')
-  const [liveStatus, setLiveStatus] = useState<string | null>(null)
+  const [alertModalOpen, setAlertModalOpen] = useState(false)
 
   const query = useQuery({
     queryKey: ['filing', filingId],
@@ -167,38 +149,9 @@ export function FilingDetail() {
     enabled: !!filingId,
   })
 
-  // Live-updating status: a WebSocket backed by a real Postgres
-  // LISTEN/NOTIFY trigger (migration 0016), not Supabase Realtime — see
-  // that migration's docstring for why. Reconnects if the connection
-  // drops for any reason other than an intentional unmount.
-  useEffect(() => {
-    if (!filingId) return
-    let cancelled = false
-    let socket: WebSocket | null = null
-
-    function connect() {
-      if (cancelled) return
-      socket = new WebSocket(statusWebSocketUrl(filingId as string))
-      socket.onmessage = (event) => {
-        const payload = JSON.parse(event.data) as { status: string }
-        setLiveStatus((previous) => {
-          if (previous !== null && previous !== payload.status) {
-            queryClient.invalidateQueries({ queryKey: ['filing', filingId] })
-          }
-          return payload.status
-        })
-      }
-      socket.onclose = () => {
-        if (!cancelled) setTimeout(connect, 2000)
-      }
-    }
-    connect()
-
-    return () => {
-      cancelled = true
-      socket?.close()
-    }
-  }, [filingId, queryClient])
+  const liveStatus = useLiveFilingStatus(filingId, () => {
+    queryClient.invalidateQueries({ queryKey: ['filing', filingId] })
+  })
 
   async function handleViewOriginal() {
     if (!filingId) return
@@ -245,7 +198,7 @@ export function FilingDetail() {
             {filing.domain && <Badge variant="domain" value={filing.domain} />}
             {filing.risk_level && <Badge variant="risk" value={filing.risk_level} />}
             <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium capitalize text-slate-600">
-              {STATUS_LABELS[displayedStatus] ?? displayedStatus}
+              {FILING_STATUS_LABELS[displayedStatus] ?? displayedStatus}
             </span>
           </div>
         </div>
@@ -256,16 +209,36 @@ export function FilingDetail() {
               <span>Priority score: {filing.priority_score.toFixed(2)}</span>
             )}
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            className="w-full whitespace-nowrap sm:w-auto"
-            onClick={handleViewOriginal}
-          >
-            View Original Document
-          </Button>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="w-full whitespace-nowrap sm:w-auto"
+              onClick={handleViewOriginal}
+            >
+              View Original Document
+            </Button>
+            {role === 'admin' && filing.brief !== null && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="w-full whitespace-nowrap sm:w-auto"
+                onClick={() => setAlertModalOpen(true)}
+              >
+                Send alert to email
+              </Button>
+            )}
+          </div>
         </div>
       </Card>
+
+      {role === 'admin' && filing.brief !== null && (
+        <SendAlertModal
+          filingId={filing.id}
+          isOpen={alertModalOpen}
+          onClose={() => setAlertModalOpen(false)}
+        />
+      )}
 
       <Card>
         <div className="mb-4 flex gap-1 border-b border-slate-200">

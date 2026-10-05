@@ -109,11 +109,15 @@ def test_list_pending_filings_returns_non_complete_filings_for_admin(
     filing = _pending_filing_row()
 
     mock_db = AsyncMock()
+    count_result = MagicMock()
+    count_result.scalar_one = MagicMock(return_value=1)
     query_result = MagicMock()
     query_result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[filing])))
     # get_authenticated_db issues three set_config() calls before the route
-    # body's own query runs.
-    mock_db.execute = AsyncMock(side_effect=[MagicMock(), MagicMock(), MagicMock(), query_result])
+    # body's own count query, then its page query, run.
+    mock_db.execute = AsyncMock(
+        side_effect=[MagicMock(), MagicMock(), MagicMock(), count_result, query_result]
+    )
     _mock_authenticated_db(monkeypatch, mock_db=mock_db)
 
     response = TestClient(create_app()).get(
@@ -121,10 +125,13 @@ def test_list_pending_filings_returns_non_complete_filings_for_admin(
     )
 
     assert response.status_code == 200
-    body = response.json()["data"][0]
-    assert body["entity_name"] == "Stuck Corp"
-    assert body["status"] == "ingested"
-    assert body["source"] == "SEC"
+    body = response.json()
+    assert body["total"] == 1
+    assert body["page"] == 1
+    row = body["data"][0]
+    assert row["entity_name"] == "Stuck Corp"
+    assert row["status"] == "ingested"
+    assert row["source"] == "SEC"
 
 
 def test_process_filing_rejects_non_admin(monkeypatch: pytest.MonkeyPatch):

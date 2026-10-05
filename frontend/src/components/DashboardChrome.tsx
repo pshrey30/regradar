@@ -76,7 +76,7 @@ export function DashboardChrome({ children, homePath, navSlot, modeLabel }: Dash
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   return (
-    <div className="flex min-h-screen flex-col md:flex-row">
+    <div className="flex min-h-screen flex-col md:h-screen md:flex-row md:overflow-hidden">
       <header className="flex items-center justify-between border-b border-slate-200 bg-white p-4 md:hidden">
         <span className="font-mono text-sm font-semibold tracking-[0.2em] text-slate-900">
           REGRADAR
@@ -107,7 +107,7 @@ export function DashboardChrome({ children, homePath, navSlot, modeLabel }: Dash
         </nav>
       )}
 
-      <nav className="hidden w-56 shrink-0 flex-col border-r border-slate-200 bg-white p-4 md:flex">
+      <nav className="hidden w-56 shrink-0 flex-col border-r border-slate-200 bg-white p-4 md:flex md:h-full">
         <Link to={homePath} className="mb-1 block font-mono text-sm font-semibold tracking-[0.2em] text-slate-900">
           REGRADAR
         </Link>
@@ -116,11 +116,15 @@ export function DashboardChrome({ children, homePath, navSlot, modeLabel }: Dash
             {modeLabel}
           </span>
         )}
-        {navSlot()}
+        {/* Nav links scroll on their own if the list ever outgrows the
+            sidebar's height — the signed-in-as/Sign out block below stays
+            pinned in view regardless, instead of scrolling away with a long
+            Activity feed or Filings table in the main content pane. */}
+        <div className="flex-1 overflow-y-auto">{navSlot()}</div>
         <SignOutForm />
       </nav>
 
-      <main className="flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
+      <main className="flex-1 p-4 sm:p-6 lg:p-8 md:overflow-y-auto">{children}</main>
     </div>
   )
 }

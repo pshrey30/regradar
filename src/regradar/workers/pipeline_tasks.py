@@ -13,8 +13,9 @@ import uuid
 from celery import Task
 from celery.utils.log import get_task_logger
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from regradar.agents.graph import build_graph
+from regradar.agents.graph import build_graph, route_after_triage
 from regradar.agents.relevance_agent import compute_priority_score
 from regradar.agents.state import OrgProfileSnapshot, PipelineState
 from regradar.core.db import get_session_factory, set_rls_context
@@ -29,6 +30,30 @@ from regradar.rag.pdf_extraction import extract_text_and_tables, fetch_document_
 from regradar.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
+
+# Live pipeline status (FE-08): the node that just finished, mapped to the
+# status that reflects the stage now starting. "relevance" isn't one of the
+# UI's six named stages (fetch/ingest/classify/extract/summarize/deliver) —
+# it's a fast scoring step folded into "extract"'s tail, so its own
+# completion is what actually triggers the visible move to "summarizing".
+# "triage" is handled separately below since its next stage (retrieve vs.
+# analyze) depends on route_after_triage's own routing decision.
+_NEXT_STATUS_AFTER_NODE = {
+    "retrieve": FilingStatus.ANALYZING,
+    "relevance": FilingStatus.SUMMARIZING,
+    "summarize": FilingStatus.DELIVERING,
+}
+
+
+async def _advance_status(db: AsyncSession, filing: Filing, status: FilingStatus) -> None:
+    """Commit one intermediate pipeline-status transition so migration
+    0016's trigger NOTIFYs it to any subscribed status/ws client in real
+    time, then re-assert the RLS role this function's own transaction
+    needs — see the comment on set_rls_context's other call sites below for
+    why every write after a commit must re-assert it."""
+    filing.status = status
+    await db.commit()
+    await set_rls_context(db, role="service")
 
 
 async def _mark_filing_failed(filing_id: str, error_message: str) -> None:
@@ -59,6 +84,11 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             await db.commit()
             return
 
+        # Live pipeline status starts here — covers the PDF-extraction prep
+        # below plus the triage node, both part of "classifying" from the
+        # UI's point of view.
+        await _advance_status(db, filing, FilingStatus.CLASSIFYING)
+
         raw_text = ""
         chunks: list = []
         if filing.raw_pdf_s3_key:
@@ -86,7 +116,32 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
         state = PipelineState(
             filing_id=filing.id, raw_text=raw_text, chunks=chunks or None, org_profile=org_profile
         )
-        result = await build_graph().ainvoke(state, config={"configurable": {"db": db}})
+
+        # astream (not ainvoke) so each node's completion can advance
+        # filing.status in real time — "values" mode's last chunk is the
+        # same full merged-state dict ainvoke() used to return (verified:
+        # both yield a plain dict, never a PipelineState instance, even
+        # though every node returns state.model_copy(...)), so the
+        # post-processing below is unchanged. "updates" mode's chunk is
+        # also a full per-node state dict (LangGraph doesn't diff a node
+        # that returns its whole state), keyed by the node name that just
+        # ran — that key is what drives each status transition below.
+        result: dict = {}
+        async for mode, chunk in build_graph().astream(
+            state, config={"configurable": {"db": db}}, stream_mode=["values", "updates"]
+        ):
+            if mode == "values":
+                result = chunk
+                continue
+            node_name, node_output = next(iter(chunk.items()))
+            if node_name == "triage":
+                next_node = route_after_triage(PipelineState.model_validate(node_output))
+                next_status = (
+                    FilingStatus.RETRIEVING if next_node == "retrieve" else FilingStatus.ANALYZING
+                )
+                await _advance_status(db, filing, next_status)
+            elif node_name in _NEXT_STATUS_AFTER_NODE:
+                await _advance_status(db, filing, _NEXT_STATUS_AFTER_NODE[node_name])
 
         # Real bug found live (first time this pipeline ever ran against a
         # populated deliveries table with an actual channel configured):
@@ -156,20 +211,44 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
                 dict.fromkeys(str(chunk.filing_id) for chunk in retrieved_chunks)
             )
             await set_rls_context(db, role="service")  # see the comment above — re-assert post-commit
-            db.add(
-                Extraction(
-                    filing_id=filing.id,
-                    obligations=extraction_result.obligations,
-                    deadlines=extraction_result.deadlines,
-                    risk_flags=extraction_result.risk_flags,
-                    affected_products=extraction_result.affected_products,
-                    key_entities=extraction_result.key_entities,
-                    competitor_mentions=extraction_result.competitor_mentions,
-                    model_used=extraction_result.model_used,
-                    raw_model_response=extraction_result.model_dump(),
-                    similar_filing_ids=similar_filing_ids or None,
+            # Live-verified real bug: this always INSERTed, even though
+            # extractions.filing_id is unique (one-to-one with filings) —
+            # reprocessing any filing whose extraction had already
+            # succeeded once (e.g. clicking "Process now" again, or a
+            # retry after Brief/embedding failed post-commit below) hit a
+            # duplicate-key IntegrityError and the filing was marked
+            # failed despite classification/extraction having genuinely
+            # succeeded. Upsert instead: reuse the existing row's id (and
+            # created_at) if one exists, so this survives being run more
+            # than once for the same filing.
+            existing_extraction = (
+                await db.execute(select(Extraction).where(Extraction.filing_id == filing.id))
+            ).scalar_one_or_none()
+            if existing_extraction is not None:
+                existing_extraction.obligations = extraction_result.obligations
+                existing_extraction.deadlines = extraction_result.deadlines
+                existing_extraction.risk_flags = extraction_result.risk_flags
+                existing_extraction.affected_products = extraction_result.affected_products
+                existing_extraction.key_entities = extraction_result.key_entities
+                existing_extraction.competitor_mentions = extraction_result.competitor_mentions
+                existing_extraction.model_used = extraction_result.model_used
+                existing_extraction.raw_model_response = extraction_result.model_dump()
+                existing_extraction.similar_filing_ids = similar_filing_ids or None
+            else:
+                db.add(
+                    Extraction(
+                        filing_id=filing.id,
+                        obligations=extraction_result.obligations,
+                        deadlines=extraction_result.deadlines,
+                        risk_flags=extraction_result.risk_flags,
+                        affected_products=extraction_result.affected_products,
+                        key_entities=extraction_result.key_entities,
+                        competitor_mentions=extraction_result.competitor_mentions,
+                        model_used=extraction_result.model_used,
+                        raw_model_response=extraction_result.model_dump(),
+                        similar_filing_ids=similar_filing_ids or None,
+                    )
                 )
-            )
             await db.commit()
 
         if result.get("briefs") is not None:
@@ -179,16 +258,32 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
             briefs_result = result["briefs"]
             try:
                 await set_rls_context(db, role="service")  # see the comment above — re-assert post-commit
-                db.add(
-                    Brief(
-                        filing_id=filing.id,
-                        executive_brief=briefs_result.executive_brief,
-                        cco_summary=briefs_result.cco_summary,
-                        analyst_summary=briefs_result.analyst_summary,
-                        engineer_summary=briefs_result.engineer_summary,
-                        model_used=briefs_result.model_used,
+                # Same upsert reasoning as Extraction above — briefs.filing_id
+                # is also unique (one-to-one), so reprocessing a filing whose
+                # Brief already existed used to hit a duplicate-key error
+                # here every time, silently swallowed by this except block —
+                # the filing reported success but its updated summary never
+                # actually saved.
+                existing_brief = (
+                    await db.execute(select(Brief).where(Brief.filing_id == filing.id))
+                ).scalar_one_or_none()
+                if existing_brief is not None:
+                    existing_brief.executive_brief = briefs_result.executive_brief
+                    existing_brief.cco_summary = briefs_result.cco_summary
+                    existing_brief.analyst_summary = briefs_result.analyst_summary
+                    existing_brief.engineer_summary = briefs_result.engineer_summary
+                    existing_brief.model_used = briefs_result.model_used
+                else:
+                    db.add(
+                        Brief(
+                            filing_id=filing.id,
+                            executive_brief=briefs_result.executive_brief,
+                            cco_summary=briefs_result.cco_summary,
+                            analyst_summary=briefs_result.analyst_summary,
+                            engineer_summary=briefs_result.engineer_summary,
+                            model_used=briefs_result.model_used,
+                        )
                     )
-                )
                 await db.commit()
             except Exception as exc:  # noqa: BLE001 — a transient Brief-insert failure must
                 # not re-trigger the whole task (with autoretry_for=(Exception,)) and re-run

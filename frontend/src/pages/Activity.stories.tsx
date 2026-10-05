@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { http, HttpResponse, delay } from 'msw'
 import { MemoryRouter } from 'react-router-dom'
+import { expect, userEvent, within } from 'storybook/test'
 
 import { AuthContext } from '../auth/AuthContext'
 import { Activity } from './Activity'
@@ -26,6 +27,7 @@ const sentEngineeringAlert = {
   domain: 'engineering' as const,
   risk_level: 'high' as const,
   channel: 'slack' as const,
+  recipient: '#regradar-alerts',
   status: 'sent' as const,
   is_fallback: false,
   at: '2026-09-26T14:00:00Z',
@@ -40,6 +42,7 @@ const failedFinancialAlert = {
   domain: 'financial' as const,
   risk_level: 'critical' as const,
   channel: 'email' as const,
+  recipient: 'compliance@globex.example.com',
   status: 'failed' as const,
   is_fallback: true,
   at: '2026-09-25T09:30:00Z',
@@ -50,7 +53,7 @@ const failedFinancialAlert = {
 // pagination) rather than a bare array — every mock below wraps its items
 // in this shape.
 function activityPage(data: unknown[]) {
-  return { data, page: 1, page_size: 20, total: data.length }
+  return { data, page: 1, page_size: 10, total: data.length }
 }
 
 const meta = {
@@ -129,6 +132,33 @@ export const AsAdmin: Story = {
         HttpResponse.json(activityPage([sentEngineeringAlert, failedFinancialAlert])),
       ),
     )
+  },
+}
+
+// Admin-only manual alert (per-row "Send alert" button, backed by the same
+// POST /v1/filings/{id}/alert as FilingDetail's — see SendAlertModal.tsx).
+// Drives the real flow: open the modal for one row, send it, see the
+// confirmation — the eng_lead story below then confirms the button is
+// entirely absent for a non-admin role.
+export const AdminSendAlert: Story = {
+  beforeEach({ msw }) {
+    msw.use(
+      http.get('*/v1/activity', () =>
+        HttpResponse.json(activityPage([sentEngineeringAlert, failedFinancialAlert])),
+      ),
+      http.post('*/v1/filings/f-1/alert', () =>
+        HttpResponse.json({ status: 'sent', recipient: 'compliance@meridianbiotech.test', error_message: null }),
+      ),
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const sendButtons = await canvas.findAllByRole('button', { name: 'Send alert' })
+    await userEvent.click(sendButtons[0])
+    const dialog = within(await canvas.findByRole('dialog'))
+    await userEvent.type(await dialog.findByLabelText('Recipient email'), 'compliance@meridianbiotech.test')
+    await userEvent.click(dialog.getByRole('button', { name: 'Send alert' }))
+    await expect(await dialog.findByText('compliance@meridianbiotech.test')).toBeInTheDocument()
   },
 }
 

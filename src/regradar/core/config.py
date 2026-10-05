@@ -49,8 +49,16 @@ class Settings(BaseSettings):
     redis_url: SecretStr = Field(alias="REDIS_URL")
 
     # ── Object storage (raw PDFs) ───────────────────────────
+    # S3_ENDPOINT_URL is unset for real AWS S3 (boto3's own default applies)
+    # and set to Supabase Storage's S3-compatible gateway
+    # (https://<project-ref>.supabase.co/storage/v1/s3) to point this same
+    # boto3-based client at a Supabase Storage bucket instead — Storage's
+    # S3-compatible API implements put_object/get_object/head_object/
+    # presigned GET URLs, so core/s3_client.py needs no provider-specific
+    # branching, only this one extra constructor argument.
     s3_bucket_name: str = Field(alias="S3_BUCKET_NAME")
     s3_region: str = Field(alias="S3_REGION")
+    s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
     aws_access_key_id: SecretStr = Field(alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: SecretStr = Field(alias="AWS_SECRET_ACCESS_KEY")
 

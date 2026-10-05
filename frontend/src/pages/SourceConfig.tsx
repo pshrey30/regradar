@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
+import { Input } from '../components/Input'
 import { ApiError, apiFetch } from '../lib/api'
 
 type Source = 'SEC' | 'FDA' | 'FINRA'
@@ -14,9 +16,14 @@ export interface SourceConfigItem {
   is_active: boolean
   poll_interval_seconds: number
   last_polled_at: string | null
+  feed_url: string | null
 }
 
-const SOURCES: Source[] = ['SEC', 'FDA', 'FINRA']
+// FDA is deliberately absent here — it has no on/off toggle of its own.
+// Its active state is derived entirely from whether a feed URL is
+// configured (see the dirty/save logic below), and it's polled via its own
+// "Poll now" button rather than the shared poll-once/toggle flow.
+const TOGGLE_SOURCES: Source[] = ['SEC', 'FINRA']
 const DOMAINS: { value: Domain; label: string }[] = [
   { value: 'financial', label: 'Financial' },
   { value: 'clinical', label: 'Clinical' },
@@ -65,6 +72,7 @@ export function SourceConfig() {
 
   const [activeSources, setActiveSources] = useState<Set<Source>>(new Set())
   const [activeDomains, setActiveDomains] = useState<Set<Domain>>(new Set())
+  const [fdaFeedUrl, setFdaFeedUrl] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedJustNow, setSavedJustNow] = useState(false)
 
@@ -77,22 +85,38 @@ export function SourceConfig() {
   const [syncedFrom, setSyncedFrom] = useState<SourceConfigItem[] | undefined>(undefined)
   if (query.data !== undefined && query.data !== syncedFrom) {
     setSyncedFrom(query.data)
-    setActiveSources(new Set(query.data.filter((row) => row.is_active).map((row) => row.source)))
+    setActiveSources(
+      new Set(
+        query.data
+          .filter((row) => row.is_active && TOGGLE_SOURCES.includes(row.source))
+          .map((row) => row.source),
+      ),
+    )
     setActiveDomains(domainsFromRows(query.data))
+    setFdaFeedUrl(query.data.find((row) => row.source === 'FDA')?.feed_url ?? '')
   }
 
+  const serverToggleSources = new Set(
+    (query.data ?? []).filter((row) => row.is_active && TOGGLE_SOURCES.includes(row.source)).map((row) => row.source),
+  )
+  const serverFdaFeedUrl = query.data?.find((row) => row.source === 'FDA')?.feed_url ?? ''
   const dirty =
     query.data !== undefined &&
-    (!setsEqual(activeSources, new Set(query.data.filter((row) => row.is_active).map((row) => row.source))) ||
-      !setsEqual(activeDomains, domainsFromRows(query.data)))
+    (!setsEqual(activeSources, serverToggleSources) ||
+      !setsEqual(activeDomains, domainsFromRows(query.data)) ||
+      fdaFeedUrl !== serverFdaFeedUrl)
 
   const saveMutation = useMutation({
     mutationFn: () =>
       apiFetch<SourceConfigItem[]>('/v1/config/sources', {
         method: 'POST',
         body: JSON.stringify({
-          sources: Array.from(activeSources),
+          // FDA has no toggle of its own — it's active exactly when a feed
+          // URL is configured, so its inclusion here is derived rather
+          // than tracked as its own piece of state.
+          sources: [...Array.from(activeSources), ...(fdaFeedUrl.trim() ? (['FDA'] as const) : [])],
           domains: Array.from(activeDomains),
+          fda_feed_url: fdaFeedUrl.trim() || null,
         }),
       }),
     onSuccess: (data) => {
@@ -105,6 +129,69 @@ export function SourceConfig() {
       setSaveError(
         error instanceof ApiError ? error.message : 'Something went wrong saving your changes.',
       )
+    },
+  })
+
+  const fdaRow = query.data?.find((row) => row.source === 'FDA')
+  const [pollResult, setPollResult] = useState<string | null>(null)
+  const [fetchResult, setFetchResult] = useState<string | null>(null)
+
+  // Every filing pending for this org (not just ones this call fetched) is
+  // then processed in the background by the server — see PollSourceResponse/
+  // FetchNowResponse's own docstrings. Invalidating these two queries means
+  // whichever page the admin lands on next (Filings, most likely) shows
+  // the newly-pending/newly-processing rows immediately rather than on
+  // some later background refetch.
+  function invalidateFilingsQueries() {
+    queryClient.invalidateQueries({ queryKey: ['config', 'sources'] })
+    queryClient.invalidateQueries({ queryKey: ['filings-pending'] })
+    queryClient.invalidateQueries({ queryKey: ['filings'] })
+  }
+
+  function processingSuffix(count: number): string {
+    if (count === 0) return ''
+    return ` Now processing ${count} filing${count === 1 ? '' : 's'} live — see the Filings page.`
+  }
+
+  const pollFdaMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{
+        source: Source
+        new_filing_count: number
+        last_polled_at: string | null
+        processing_filing_ids: string[]
+      }>('/v1/config/sources/FDA/poll', { method: 'POST' }),
+    onSuccess: (data) => {
+      invalidateFilingsQueries()
+      const fetched =
+        data.new_filing_count === 0
+          ? 'Polled — no new filings found.'
+          : `Polled — ${data.new_filing_count} new filing${data.new_filing_count === 1 ? '' : 's'} found.`
+      setPollResult(fetched + processingSuffix(data.processing_filing_ids.length))
+    },
+    onError: (error) => {
+      setPollResult(error instanceof ApiError ? error.message : 'Polling FDA failed.')
+    },
+  })
+
+  const fetchNowMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{
+        results: { source: Source; new_filing_count: number }[]
+        processing_filing_ids: string[]
+      }>('/v1/config/sources/fetch-now', {
+        method: 'POST',
+        body: JSON.stringify({ sources: Array.from(serverToggleSources) }),
+      }),
+    onSuccess: (data) => {
+      invalidateFilingsQueries()
+      const perSource = data.results
+        .map((result) => `${result.source} ${result.new_filing_count}`)
+        .join(', ')
+      setFetchResult(`Fetched — ${perSource} new.` + processingSuffix(data.processing_filing_ids.length))
+    },
+    onError: (error) => {
+      setFetchResult(error instanceof ApiError ? error.message : 'Fetching failed.')
     },
   })
 
@@ -154,9 +241,24 @@ export function SourceConfig() {
       {query.isSuccess && (
         <>
           <Card>
-            <p className="mb-3 text-sm font-semibold text-slate-900">Regulators</p>
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-sm font-semibold text-slate-900">Regulators</p>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={dirty || serverToggleSources.size === 0}
+                loading={fetchNowMutation.isPending}
+                onClick={() => {
+                  setFetchResult(null)
+                  fetchNowMutation.mutate()
+                }}
+              >
+                Fetch now
+              </Button>
+            </div>
             <div className="flex flex-col gap-2">
-              {SOURCES.map((source) => {
+              {TOGGLE_SOURCES.map((source) => {
                 const row = query.data.find((r) => r.source === source)
                 const polled = row ? lastPolledLabel(row) : null
                 return (
@@ -176,9 +278,73 @@ export function SourceConfig() {
                 )
               })}
             </div>
+            <p className="mt-1 text-xs text-slate-400">
+              {dirty
+                ? 'Save your checked regulators before fetching.'
+                : serverToggleSources.size === 0
+                  ? 'Check at least one regulator above to fetch.'
+                  : `Fetches from ${Array.from(serverToggleSources).join(' and ')}.`}
+            </p>
+            {fetchResult && (
+              <p className="mt-2 text-xs text-slate-500">
+                {fetchResult}{' '}
+                {fetchResult.includes('processing') && (
+                  <Link to="/filings" className="text-primary-600 hover:underline">
+                    View live progress →
+                  </Link>
+                )}
+              </p>
+            )}
+            <div className="mt-4 border-t border-slate-200 pt-4">
+              <Input
+                label="FDA feed URL"
+                value={fdaFeedUrl}
+                onChange={(e) => {
+                  setSaveError(null)
+                  setFdaFeedUrl(e.target.value)
+                }}
+                placeholder="https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/drugs/rss.xml"
+                helperText="SEC and FINRA are driven entirely by their own APIs — only FDA needs a feed URL. Any of FDA's public RSS feeds work (Drugs, Recalls/Safety Alerts, Press Releases)."
+              />
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="text-xs text-slate-400">
+                  {dirty
+                    ? 'Save this URL before polling it.'
+                    : !serverFdaFeedUrl
+                      ? 'No feed URL configured yet.'
+                      : fdaRow
+                        ? lastPolledLabel(fdaRow).text
+                        : null}
+                </p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={!serverFdaFeedUrl || dirty}
+                  loading={pollFdaMutation.isPending}
+                  onClick={() => {
+                    setPollResult(null)
+                    pollFdaMutation.mutate()
+                  }}
+                >
+                  Poll now
+                </Button>
+              </div>
+              {pollResult && (
+                <p className="mt-2 text-xs text-slate-500">
+                  {pollResult}{' '}
+                  {pollResult.includes('processing') && (
+                    <Link to="/filings" className="text-primary-600 hover:underline">
+                      View live progress →
+                    </Link>
+                  )}
+                </p>
+              )}
+            </div>
             <p className="mt-3 text-xs text-slate-400">
-              Polling is manual (<code className="rounded bg-slate-100 px-1 py-0.5">regradar poll-once</code>)
-              — this project has no always-on scheduler, so nothing polls these on its own.
+              SEC and FINRA are polled manually (
+              <code className="rounded bg-slate-100 px-1 py-0.5">regradar poll-once</code>) — this project
+              has no always-on scheduler, so nothing polls these on its own.
             </p>
           </Card>
 

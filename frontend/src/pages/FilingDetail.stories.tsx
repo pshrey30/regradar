@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
 import { http, HttpResponse, delay } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -70,6 +71,23 @@ const meta = {
         </Routes>
       </MemoryRouter>
     ),
+    // FilingDetail calls useAuth() to gate the Admin-only "Send alert"
+    // button, and useAuth() throws outside an AuthProvider — every story
+    // needs one. Defaults to a non-admin role; AsExecutiveNoExtraction and
+    // AsAdminSendAlert override this with their own AuthContext.Provider.
+    (Story) => (
+      <AuthContext.Provider
+        value={{
+          status: 'authenticated',
+          role: 'analyst',
+          organizationId: 'org-1',
+          displayName: 'Ana Analyst',
+          organizationSetupComplete: true,
+        }}
+      >
+        <Story />
+      </AuthContext.Provider>
+    ),
   ],
 } satisfies Meta<typeof FilingDetail>
 
@@ -131,9 +149,9 @@ export const ErrorState: Story = {
 // renders correctly if the mock response genuinely omits the key rather
 // than setting it to null. The brief endpoint is mocked to return the
 // cco-narrowed summary a real Executive-role caller receives (see
-// get_filing_brief's docstring); FilingDetail doesn't read AuthContext
-// itself, so this override exists to document which persona/role this
-// story represents, not because the component branches on it.
+// get_filing_brief's docstring). This role override also confirms the
+// Admin-only "Send alert to email" button stays hidden for a non-Admin
+// role (see the dedicated Admin story below for the button itself).
 const { extraction: _omittedExtraction, ...executiveFiling } = sampleFiling
 
 export const AsExecutiveNoExtraction: Story = {
@@ -157,5 +175,45 @@ export const AsExecutiveNoExtraction: Story = {
       http.get('*/v1/filings/1', () => HttpResponse.json(executiveFiling)),
       http.get('*/v1/filings/1/brief', () => HttpResponse.json({ persona: 'cco', summary: sampleBrief.summary })),
     )
+  },
+}
+
+// Admin-only manual alert: the button only renders when role === 'admin'
+// AND the filing has a brief (POST /v1/filings/{id}/alert 409s otherwise —
+// see send_manual_alert's docstring). This story drives the full flow —
+// open the modal, type an email, send it, see the confirmation — through
+// real user interaction rather than asserting on internal state.
+export const AsAdminSendAlert: Story = {
+  decorators: [
+    (Story) => (
+      <AuthContext.Provider
+        value={{
+          status: 'authenticated',
+          role: 'admin',
+          organizationId: 'org-1',
+          displayName: 'Adam Admin',
+          organizationSetupComplete: true,
+        }}
+      >
+        <Story />
+      </AuthContext.Provider>
+    ),
+  ],
+  beforeEach({ msw }) {
+    msw.use(
+      http.get('*/v1/filings/1', () => HttpResponse.json(sampleFiling)),
+      http.get('*/v1/filings/1/brief', () => HttpResponse.json(sampleBrief)),
+      http.post('*/v1/filings/1/alert', () =>
+        HttpResponse.json({ status: 'sent', recipient: 'compliance@meridianbiotech.test', error_message: null }),
+      ),
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(await canvas.findByRole('button', { name: 'Send alert to email' }))
+    const emailInput = await canvas.findByLabelText('Recipient email')
+    await userEvent.type(emailInput, 'compliance@meridianbiotech.test')
+    await userEvent.click(canvas.getByRole('button', { name: 'Send alert' }))
+    await expect(await canvas.findByText('compliance@meridianbiotech.test')).toBeInTheDocument()
   },
 }

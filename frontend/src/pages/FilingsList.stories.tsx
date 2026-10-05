@@ -67,7 +67,7 @@ export const Populated: Story = {
     msw.use(
       http.get('*/v1/filings/pending', () => HttpResponse.json({ data: [] })),
       http.get('*/v1/filings', () =>
-        HttpResponse.json({ data: [sampleFiling], page: 1, page_size: 20, total: 1 }),
+        HttpResponse.json({ data: [sampleFiling], page: 1, page_size: 10, total: 1 }),
       ),
     )
   },
@@ -78,7 +78,7 @@ export const Empty: Story = {
     msw.use(
       http.get('*/v1/filings/pending', () => HttpResponse.json({ data: [] })),
       http.get('*/v1/filings', () =>
-        HttpResponse.json({ data: [], page: 1, page_size: 20, total: 0 }),
+        HttpResponse.json({ data: [], page: 1, page_size: 10, total: 0 }),
       ),
     )
   },
@@ -113,9 +113,11 @@ export const ErrorState: Story = {
 export const AsAdmin: Story = {
   beforeEach({ msw }) {
     msw.use(
-      http.get('*/v1/filings/pending', () => HttpResponse.json({ data: [samplePendingFiling] })),
+      http.get('*/v1/filings/pending', () =>
+        HttpResponse.json({ data: [samplePendingFiling], page: 1, page_size: 10, total: 1 }),
+      ),
       http.get('*/v1/filings', () =>
-        HttpResponse.json({ data: [sampleFiling], page: 1, page_size: 20, total: 1 }),
+        HttpResponse.json({ data: [sampleFiling], page: 1, page_size: 10, total: 1 }),
       ),
     )
   },
@@ -145,7 +147,7 @@ export const AsAnalyst: Story = {
   beforeEach({ msw }) {
     msw.use(
       http.get('*/v1/filings', () =>
-        HttpResponse.json({ data: [sampleFiling], page: 1, page_size: 20, total: 1 }),
+        HttpResponse.json({ data: [sampleFiling], page: 1, page_size: 10, total: 1 }),
       ),
     )
   },

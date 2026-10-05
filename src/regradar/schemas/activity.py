@@ -16,6 +16,10 @@ class ActivityItem(BaseModel):
     domain: FilingDomain | None
     risk_level: RiskLevel | None
     channel: DeliveryChannel
+    # The actual destination this alert was sent to — an email address for
+    # channel=email, a Slack webhook/channel identifier for channel=slack,
+    # a webhook URL for channel=webhook.
+    recipient: str
     status: DeliveryStatus
     is_fallback: bool
     # The moment this alert actually went out — falls back to when the

@@ -56,6 +56,7 @@ def _mock_auth_and_rate_limit(monkeypatch: pytest.MonkeyPatch, *, role: ApiKeyRo
 def _delivery_row(
     *,
     channel: DeliveryChannel = DeliveryChannel.SLACK,
+    recipient: str = "#regradar-alerts",
     status: DeliveryStatus = DeliveryStatus.SENT,
     sent_at=None,
     is_fallback: bool = False,
@@ -65,6 +66,7 @@ def _delivery_row(
     row.id = uuid.uuid4()
     row.filing_id = uuid.uuid4()
     row.channel = channel
+    row.recipient = recipient
     row.status = status
     row.is_fallback = is_fallback
     row.sent_at = sent_at
@@ -114,6 +116,26 @@ def test_activity_visible_to_every_role(monkeypatch: pytest.MonkeyPatch):
     assert body["channel"] == "slack"
     assert body["status"] == "sent"
     assert body["risk_level"] == "critical"
+
+
+def test_activity_includes_recipient(monkeypatch: pytest.MonkeyPatch):
+    _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
+    sent_at = datetime(2026, 1, 2, tzinfo=UTC)
+    delivery = _delivery_row(
+        channel=DeliveryChannel.EMAIL, recipient="compliance@meridianbiotech.test", sent_at=sent_at
+    )
+    _mock_activity_db(
+        monkeypatch,
+        rows=[(delivery, "Acme Financial Corp", "10-K", FilingDomain.FINANCIAL, RiskLevel.CRITICAL, sent_at)],
+    )
+
+    response = TestClient(create_app()).get(
+        "/v1/activity", headers={"Authorization": "Bearer rr_test-key"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()["data"][0]
+    assert body["recipient"] == "compliance@meridianbiotech.test"
 
 
 def test_activity_falls_back_to_created_at_when_never_sent(monkeypatch: pytest.MonkeyPatch):

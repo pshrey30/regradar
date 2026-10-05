@@ -52,6 +52,23 @@ def _complete_profile_row(organization_id: uuid.UUID) -> MagicMock:
     return row
 
 
+def _graph_mock(result: dict) -> MagicMock:
+    """A build_graph() stand-in whose .astream() yields exactly one
+    ("values", result) tuple — the shape _run_pipeline_for_filing reads
+    its final `result` dict from (see pipeline_tasks.py's own comment on
+    why "values" mode's last chunk is equivalent to ainvoke()'s old return
+    value). No "updates" chunks are yielded, so these tests — which only
+    care about the final outcome, not the live status transitions — never
+    exercise the triage-routing branch; that branch has its own dedicated
+    tests below.
+    """
+
+    async def astream(state, config=None, stream_mode=None):
+        yield ("values", result)
+
+    return MagicMock(astream=astream)
+
+
 def test_enqueue_filing_processing_calls_delay_with_str_id() -> None:
     filing_id = uuid.uuid4()
     with patch.object(process_filing, "delay") as mock_delay:
@@ -71,6 +88,10 @@ def test_process_filing_persists_classification_on_success(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -84,9 +105,7 @@ def test_process_filing_persists_classification_on_success(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -94,9 +113,7 @@ def test_process_filing_persists_classification_on_success(
                     "briefs": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -106,7 +123,9 @@ def test_process_filing_persists_classification_on_success(
     assert filing.risk_level == RiskLevel.LOW
     assert filing.classification_confidence == 0.9
     assert filing.status == FilingStatus.CLASSIFYING
-    mock_db.commit.assert_awaited_once()
+    # Once for the live-status transition to CLASSIFYING right before the
+    # graph starts, once more for the final status write after it finishes.
+    assert mock_db.commit.await_count == 2
 
 
 def test_process_filing_reasserts_rls_role_after_graph_invoke(
@@ -126,6 +145,10 @@ def test_process_filing_reasserts_rls_role_after_graph_invoke(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -139,9 +162,7 @@ def test_process_filing_reasserts_rls_role_after_graph_invoke(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -149,20 +170,157 @@ def test_process_filing_reasserts_rls_role_after_graph_invoke(
                     "briefs": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
     mock_set_rls_context = AsyncMock()
     monkeypatch.setattr(pipeline_tasks_module, "set_rls_context", mock_set_rls_context)
 
     process_filing.run(str(filing_id))
 
-    # Once at the top of the function (before db.get), once more right
-    # after ainvoke() returns and before the status commit.
-    assert mock_set_rls_context.await_count == 2
+    # Once at the top of the function (before db.get), once more from
+    # _advance_status's own re-assert after the CLASSIFYING commit, and
+    # once more right after the graph finishes and before the status
+    # commit.
+    assert mock_set_rls_context.await_count == 3
     for call in mock_set_rls_context.await_args_list:
         assert call.kwargs["role"] == "service"
+
+
+def test_process_filing_streams_live_status_through_retrieve_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FE-08: filing.status must advance through each real pipeline stage in
+    real time (not just once at the end), so migration 0016's NOTIFY
+    trigger fires for every stage a subscribed status/ws client should see.
+    A non-low risk_level routes through every node, including retrieve."""
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    profile = _complete_profile_row(filing.organization_id)
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
+
+    statuses_at_commit: list[FilingStatus] = []
+
+    async def _record_commit() -> None:
+        statuses_at_commit.append(filing.status)
+
+    mock_db.commit = AsyncMock(side_effect=_record_commit)
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+
+    async def _fake_astream(state, config=None, stream_mode=None):
+        # Every "updates" chunk carries the node's FULL returned state (see
+        # pipeline_tasks.py's own comment on this) — filing_id/raw_text are
+        # PipelineState's only required fields, so a minimal valid dict
+        # needs those plus whatever field that node actually set.
+        yield ("updates", {"triage": {"filing_id": filing_id, "raw_text": "", "risk_level": RiskLevel.HIGH}})
+        yield ("updates", {"retrieve": {"filing_id": filing_id, "raw_text": ""}})
+        yield ("updates", {"analyze": {"filing_id": filing_id, "raw_text": ""}})
+        yield ("updates", {"relevance": {"filing_id": filing_id, "raw_text": ""}})
+        yield ("updates", {"summarize": {"filing_id": filing_id, "raw_text": ""}})
+        yield ("updates", {"deliver": {"filing_id": filing_id, "raw_text": ""}})
+        yield (
+            "values",
+            {
+                "domain": FilingDomain.FINANCIAL,
+                "risk_level": RiskLevel.HIGH,
+                "classification_confidence": 0.9,
+                "extraction": None,
+                "briefs": None,
+                "delivery_status": None,
+                "delivery_success": None,
+            },
+        )
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "build_graph", lambda: MagicMock(astream=_fake_astream)
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert statuses_at_commit == [
+        FilingStatus.CLASSIFYING,  # set before the graph starts
+        FilingStatus.RETRIEVING,  # after triage, routed to retrieve (non-low risk)
+        FilingStatus.ANALYZING,  # after retrieve
+        FilingStatus.SUMMARIZING,  # after relevance
+        FilingStatus.DELIVERING,  # after summarize
+        FilingStatus.CLASSIFYING,  # final status write, from this mocked result
+    ]
+
+
+def test_process_filing_streams_live_status_skips_retrieve_for_low_risk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A low risk_level routes straight from triage to analyze (see
+    route_after_triage) — the live status must skip RETRIEVING and go
+    straight to ANALYZING, not show a stage the pipeline never visits."""
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    profile = _complete_profile_row(filing.organization_id)
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
+
+    statuses_at_commit: list[FilingStatus] = []
+
+    async def _record_commit() -> None:
+        statuses_at_commit.append(filing.status)
+
+    mock_db.commit = AsyncMock(side_effect=_record_commit)
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+
+    async def _fake_astream(state, config=None, stream_mode=None):
+        yield ("updates", {"triage": {"filing_id": filing_id, "raw_text": "", "risk_level": RiskLevel.LOW}})
+        yield ("updates", {"analyze": {"filing_id": filing_id, "raw_text": ""}})
+        yield ("updates", {"relevance": {"filing_id": filing_id, "raw_text": ""}})
+        yield ("updates", {"summarize": {"filing_id": filing_id, "raw_text": ""}})
+        yield ("updates", {"deliver": {"filing_id": filing_id, "raw_text": ""}})
+        yield (
+            "values",
+            {
+                "domain": FilingDomain.FINANCIAL,
+                "risk_level": RiskLevel.LOW,
+                "classification_confidence": 0.9,
+                "extraction": None,
+                "briefs": None,
+                "delivery_status": None,
+                "delivery_success": None,
+            },
+        )
+
+    monkeypatch.setattr(
+        pipeline_tasks_module, "build_graph", lambda: MagicMock(astream=_fake_astream)
+    )
+
+    process_filing.run(str(filing_id))
+
+    assert statuses_at_commit == [
+        FilingStatus.CLASSIFYING,
+        FilingStatus.ANALYZING,  # straight from triage — RETRIEVING never appears
+        FilingStatus.SUMMARIZING,
+        FilingStatus.DELIVERING,
+        FilingStatus.CLASSIFYING,
+    ]
 
 
 def test_process_filing_clears_stale_processing_error_on_new_run(
@@ -182,6 +340,10 @@ def test_process_filing_clears_stale_processing_error_on_new_run(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -195,9 +357,7 @@ def test_process_filing_clears_stale_processing_error_on_new_run(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -205,9 +365,7 @@ def test_process_filing_clears_stale_processing_error_on_new_run(
                     "briefs": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -227,6 +385,10 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -240,9 +402,7 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": None,
                     "risk_level": None,
                     "classification_confidence": None,
@@ -250,15 +410,14 @@ def test_process_filing_marks_needs_classification_when_triage_fails(
                     "briefs": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
 
     assert filing.status == FilingStatus.NEEDS_CLASSIFICATION
-    mock_db.commit.assert_awaited_once()
+    # CLASSIFYING transition commit + the final status commit.
+    assert mock_db.commit.await_count == 2
 
 
 def test_process_filing_handles_result_dict_missing_domain_key_entirely(
@@ -285,6 +444,10 @@ def test_process_filing_handles_result_dict_missing_domain_key_entirely(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -301,13 +464,14 @@ def test_process_filing_handles_result_dict_missing_domain_key_entirely(
         # Deliberately missing "domain"/"risk_level"/"classification_confidence"/
         # "extraction"/"briefs"/"delivery_status"/"delivery_success" entirely —
         # matching real ainvoke() output for an unmodified initial state.
-        lambda: MagicMock(ainvoke=AsyncMock(return_value={})),
+        lambda: _graph_mock({}),
     )
 
     process_filing.run(str(filing_id))
 
     assert filing.status == FilingStatus.NEEDS_CLASSIFICATION
-    mock_db.commit.assert_awaited_once()
+    # CLASSIFYING transition commit + the final status commit.
+    assert mock_db.commit.await_count == 2
 
 
 def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
@@ -322,6 +486,10 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -335,9 +503,7 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -345,9 +511,7 @@ def test_process_filing_extracts_text_and_embeds_chunks_when_pdf_present(
                     "briefs": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
     monkeypatch.setattr(
         pipeline_tasks_module, "fetch_document_bytes", lambda s3_key: b"fake pdf bytes"
@@ -389,6 +553,10 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -402,20 +570,23 @@ def test_process_filing_falls_back_to_empty_text_when_pdf_extraction_fails(
 
     captured_state = {}
 
-    async def _fake_ainvoke(state, config=None):
+    async def _fake_astream(state, config=None, stream_mode=None):
         captured_state["raw_text"] = state.raw_text
-        return {
-            "domain": FilingDomain.FINANCIAL,
-            "risk_level": RiskLevel.LOW,
-            "classification_confidence": 0.9,
-            "extraction": None,
-            "briefs": None,
-            "delivery_status": None,
-            "delivery_success": None,
-        }
+        yield (
+            "values",
+            {
+                "domain": FilingDomain.FINANCIAL,
+                "risk_level": RiskLevel.LOW,
+                "classification_confidence": 0.9,
+                "extraction": None,
+                "briefs": None,
+                "delivery_status": None,
+                "delivery_success": None,
+            },
+        )
 
     monkeypatch.setattr(
-        pipeline_tasks_module, "build_graph", lambda: MagicMock(ainvoke=_fake_ainvoke)
+        pipeline_tasks_module, "build_graph", lambda: MagicMock(astream=_fake_astream)
     )
     monkeypatch.setattr(
         pipeline_tasks_module,
@@ -443,6 +614,10 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -456,9 +631,7 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -466,9 +639,7 @@ def test_process_filing_skips_extraction_when_no_pdf_key(
                     "briefs": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
     mock_fetch = MagicMock()
     monkeypatch.setattr(pipeline_tasks_module, "fetch_document_bytes", mock_fetch)
@@ -493,6 +664,10 @@ def test_process_filing_persists_extraction_on_success(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -526,9 +701,7 @@ def test_process_filing_persists_extraction_on_success(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -536,9 +709,7 @@ def test_process_filing_persists_extraction_on_success(
                     "briefs": briefs_result,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -549,6 +720,93 @@ def test_process_filing_persists_extraction_on_success(
     assert added_extraction.filing_id == filing_id
     assert added_extraction.obligations == extraction_result.obligations
     assert added_extraction.model_used == "llama3.1"
+    assert filing.status == FilingStatus.CLASSIFYING
+
+
+def test_process_filing_updates_existing_extraction_and_brief_on_reprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for a live-verified real bug: clicking "Process now"
+    on a filing whose Extraction/Brief already existed (any status, not
+    just complete) used to always INSERT and crash on the unique
+    filing_id constraint. This must update the existing rows in place —
+    no new Extraction/Brief added, no crash, and the existing rows'
+    fields reflect the new run's output."""
+    filing_id = uuid.uuid4()
+    filing = MagicMock()
+    filing.id = filing_id
+    filing.raw_pdf_s3_key = None
+
+    profile = _complete_profile_row(filing.organization_id)
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
+    mock_db.commit = AsyncMock()
+    mock_db.add = MagicMock()
+
+    existing_extraction = MagicMock(spec=Extraction)
+    existing_brief = MagicMock(spec=Brief)
+
+    # set_rls_context also calls db.execute (three set_config() text()
+    # calls per invocation, called repeatedly through the pipeline) —
+    # only the two real `select(Extraction|Brief)...` calls this test
+    # cares about should return the "existing row" results; everything
+    # else gets a harmless default whose return value is never inspected.
+    def _execute_side_effect(stmt, *args, **kwargs):
+        compiled = str(stmt)
+        if "FROM extractions" in compiled:
+            return MagicMock(scalar_one_or_none=MagicMock(return_value=existing_extraction))
+        if "FROM briefs" in compiled:
+            return MagicMock(scalar_one_or_none=MagicMock(return_value=existing_brief))
+        return MagicMock()
+
+    mock_db.execute = AsyncMock(side_effect=_execute_side_effect)
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    import regradar.workers.pipeline_tasks as pipeline_tasks_module
+
+    monkeypatch.setattr(pipeline_tasks_module, "get_session_factory", lambda: mock_session_factory)
+
+    extraction_result = ExtractionResult(
+        obligations=[{"description": "Updated obligation.", "source_chunk_index": 0}],
+        deadlines=[],
+        risk_flags=[],
+        affected_products=[],
+        key_entities=[],
+        competitor_mentions=[],
+        model_used="llama3.1",
+    )
+    briefs_result = BriefSet(
+        executive_brief="Updated sentence one. Updated sentence two. Updated three.",
+        cco_summary="Updated board-level summary.",
+        analyst_summary="- Updated obligation",
+        engineer_summary=f"filing_id={filing_id} domain=financial risk_level=low obligations_extracted=1 status=processed",
+        model_used="llama3.1",
+    )
+    monkeypatch.setattr(
+        pipeline_tasks_module,
+        "build_graph",
+        lambda: _graph_mock({
+                    "domain": FilingDomain.FINANCIAL,
+                    "risk_level": RiskLevel.LOW,
+                    "classification_confidence": 0.9,
+                    "extraction": extraction_result,
+                    "briefs": briefs_result,
+                    "delivery_status": None,
+                    "delivery_success": None,
+                }),
+    )
+
+    process_filing.run(str(filing_id))
+
+    # Neither Extraction nor Brief was re-added — both rows already existed
+    # and were updated in place instead.
+    assert mock_db.add.call_count == 0
+    assert existing_extraction.obligations == extraction_result.obligations
+    assert existing_extraction.model_used == "llama3.1"
+    assert existing_brief.executive_brief == briefs_result.executive_brief
     assert filing.status == FilingStatus.CLASSIFYING
 
 
@@ -564,6 +822,10 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -598,9 +860,7 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -608,9 +868,7 @@ def test_process_filing_marks_needs_review_when_extraction_fails(
                     "briefs": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
     mock_embed_chunks = AsyncMock()
     monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
@@ -638,6 +896,10 @@ def test_process_filing_marks_complete_when_delivery_ran(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -668,9 +930,7 @@ def test_process_filing_marks_complete_when_delivery_ran(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -678,9 +938,7 @@ def test_process_filing_marks_complete_when_delivery_ran(
                     "briefs": briefs_result,
                     "delivery_status": "slack=sent",
                     "delivery_success": True,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -714,6 +972,10 @@ def test_process_filing_stays_classifying_when_delivery_ran_but_nothing_sent(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -744,9 +1006,7 @@ def test_process_filing_stays_classifying_when_delivery_ran_but_nothing_sent(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -754,9 +1014,7 @@ def test_process_filing_stays_classifying_when_delivery_ran_but_nothing_sent(
                     "briefs": briefs_result,
                     "delivery_status": "slack=failed, email=failed",
                     "delivery_success": False,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -781,6 +1039,10 @@ def test_process_filing_stays_classifying_when_delivery_status_none(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -811,9 +1073,7 @@ def test_process_filing_stays_classifying_when_delivery_status_none(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -821,9 +1081,7 @@ def test_process_filing_stays_classifying_when_delivery_status_none(
                     "briefs": briefs_result,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -843,6 +1101,10 @@ def test_process_filing_marks_needs_review_when_summarization_fails(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -866,9 +1128,7 @@ def test_process_filing_marks_needs_review_when_summarization_fails(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -876,9 +1136,7 @@ def test_process_filing_marks_needs_review_when_summarization_fails(
                     "briefs": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -903,6 +1161,10 @@ def test_process_filing_continues_when_embed_chunks_raises(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -953,9 +1215,7 @@ def test_process_filing_continues_when_embed_chunks_raises(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -963,9 +1223,7 @@ def test_process_filing_continues_when_embed_chunks_raises(
                     "briefs": briefs_result,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
     mock_embed_chunks = AsyncMock(side_effect=RuntimeError("embedding service down"))
     monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
@@ -997,10 +1255,12 @@ def test_process_filing_continues_when_brief_commit_raises(
     profile = _complete_profile_row(filing.organization_id)
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
-    # The first commit (filing status) and second commit (Extraction) succeed;
-    # the third commit (Brief) raises — isolating the failure to Brief
-    # persistence specifically, mirroring the embed_chunks-failure test above.
-    mock_db.commit = AsyncMock(side_effect=[None, None, RuntimeError("db write failed")])
+    # Commit order: (1) the live-status transition to CLASSIFYING before the
+    # graph runs, (2) the final status commit, (3) Extraction — all three
+    # succeed; (4) Brief raises — isolating the failure to Brief persistence
+    # specifically, mirroring the embed_chunks-failure test above.
+    mock_db.commit = AsyncMock(side_effect=[None, None, None, RuntimeError("db write failed")])
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -1051,9 +1311,7 @@ def test_process_filing_continues_when_brief_commit_raises(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.FINANCIAL,
                     "risk_level": RiskLevel.LOW,
                     "classification_confidence": 0.9,
@@ -1061,9 +1319,7 @@ def test_process_filing_continues_when_brief_commit_raises(
                     "briefs": briefs_result,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
     mock_embed_chunks = AsyncMock(return_value=None)
     monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
@@ -1100,6 +1356,10 @@ def test_process_filing_calls_chunk_filing_before_graph_invoke(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
     mock_db.add = MagicMock()
 
     mock_session_factory = MagicMock()
@@ -1137,29 +1397,32 @@ def test_process_filing_calls_chunk_filing_before_graph_invoke(
 
     captured_state = {}
 
-    async def _fake_ainvoke(state, config=None):
-        call_order.append("ainvoke")
+    async def _fake_astream(state, config=None, stream_mode=None):
+        call_order.append("graph")
         captured_state["chunks"] = state.chunks
-        return {
-            "domain": FilingDomain.FINANCIAL,
-            "risk_level": RiskLevel.LOW,
-            "classification_confidence": 0.9,
-            "extraction": None,
-            "briefs": None,
-            "delivery_status": None,
-            "delivery_success": None,
-        }
+        yield (
+            "values",
+            {
+                "domain": FilingDomain.FINANCIAL,
+                "risk_level": RiskLevel.LOW,
+                "classification_confidence": 0.9,
+                "extraction": None,
+                "briefs": None,
+                "delivery_status": None,
+                "delivery_success": None,
+            },
+        )
 
     monkeypatch.setattr(pipeline_tasks_module, "chunk_filing", _fake_chunk_filing)
     monkeypatch.setattr(
-        pipeline_tasks_module, "build_graph", lambda: MagicMock(ainvoke=_fake_ainvoke)
+        pipeline_tasks_module, "build_graph", lambda: MagicMock(astream=_fake_astream)
     )
     mock_embed_chunks = AsyncMock()
     monkeypatch.setattr(pipeline_tasks_module, "embed_chunks", mock_embed_chunks)
 
     process_filing.run(str(filing_id))
 
-    assert call_order == ["chunk_filing", "ainvoke"]
+    assert call_order == ["chunk_filing", "graph"]
     assert captured_state["chunks"] == fake_chunks
     mock_embed_chunks.assert_awaited_once_with(filing_id, fake_chunks, mock_db)
 
@@ -1192,6 +1455,10 @@ async def test_mark_filing_failed_updates_status_and_error(monkeypatch: pytest.M
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else None)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -1216,6 +1483,10 @@ async def test_mark_filing_failed_handles_missing_filing_gracefully(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(return_value=None)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -1369,6 +1640,10 @@ def test_process_filing_loads_org_profile_before_building_state(
         )
     )
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -1380,21 +1655,24 @@ def test_process_filing_loads_org_profile_before_building_state(
 
     captured_state = {}
 
-    async def _fake_ainvoke(state, config=None):
+    async def _fake_astream(state, config=None, stream_mode=None):
         captured_state["org_profile"] = state.org_profile
-        return {
-            "domain": FilingDomain.CLINICAL,
-            "risk_level": RiskLevel.HIGH,
-            "classification_confidence": 0.9,
-            "extraction": None,
-            "briefs": None,
-            "relevance": None,
-            "delivery_status": None,
-            "delivery_success": None,
-        }
+        yield (
+            "values",
+            {
+                "domain": FilingDomain.CLINICAL,
+                "risk_level": RiskLevel.HIGH,
+                "classification_confidence": 0.9,
+                "extraction": None,
+                "briefs": None,
+                "relevance": None,
+                "delivery_status": None,
+                "delivery_success": None,
+            },
+        )
 
     monkeypatch.setattr(
-        pipeline_tasks_module, "build_graph", lambda: MagicMock(ainvoke=_fake_ainvoke)
+        pipeline_tasks_module, "build_graph", lambda: MagicMock(astream=_fake_astream)
     )
 
     process_filing.run(str(filing_id))
@@ -1417,6 +1695,10 @@ def test_process_filing_persists_priority_score_and_relevance_fields(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -1428,9 +1710,7 @@ def test_process_filing_persists_priority_score_and_relevance_fields(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": FilingDomain.CLINICAL,
                     "risk_level": RiskLevel.HIGH,
                     "classification_confidence": 0.9,
@@ -1445,9 +1725,7 @@ def test_process_filing_persists_priority_score_and_relevance_fields(
                     ),
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -1472,6 +1750,10 @@ def test_process_filing_leaves_relevance_fields_unset_when_unclassified(
     mock_db = AsyncMock()
     mock_db.get = AsyncMock(side_effect=lambda model, *args, **kwargs: filing if model is Filing else profile)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -1483,9 +1765,7 @@ def test_process_filing_leaves_relevance_fields_unset_when_unclassified(
     monkeypatch.setattr(
         pipeline_tasks_module,
         "build_graph",
-        lambda: MagicMock(
-            ainvoke=AsyncMock(
-                return_value={
+        lambda: _graph_mock({
                     "domain": None,
                     "risk_level": None,
                     "classification_confidence": None,
@@ -1494,9 +1774,7 @@ def test_process_filing_leaves_relevance_fields_unset_when_unclassified(
                     "relevance": None,
                     "delivery_status": None,
                     "delivery_success": None,
-                }
-            )
-        ),
+                }),
     )
 
     process_filing.run(str(filing_id))
@@ -1523,6 +1801,10 @@ def test_process_filing_parks_filing_needing_organization_setup(
         side_effect=lambda model, *args, **kwargs: filing if model is Filing else None
     )
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -1565,6 +1847,10 @@ def test_process_filing_parks_filing_with_incomplete_profile(
 
     mock_db.get = AsyncMock(side_effect=_get)
     mock_db.commit = AsyncMock()
+    # Default: no existing Extraction/Brief row for this filing — matches
+    # every test here modeling a *first* successful run. Tests that need
+    # the upsert (reprocess) path override this explicitly.
+    mock_db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_db)

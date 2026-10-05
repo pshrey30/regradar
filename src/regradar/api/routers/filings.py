@@ -29,7 +29,15 @@ from regradar.core.domain_scope import allowed_domains_for_role, is_domain_visib
 from regradar.core.pg_listen import listen
 from regradar.core.s3_client import generate_presigned_pdf_url
 from regradar.models.brief import Brief
-from regradar.models.enums import ApiKeyRole, FilingDomain, FilingSource, FilingStatus, RiskLevel
+from regradar.models.enums import (
+    ApiKeyRole,
+    DeliveryChannel,
+    DeliveryStatus,
+    FilingDomain,
+    FilingSource,
+    FilingStatus,
+    RiskLevel,
+)
 from regradar.models.extraction import Extraction
 from regradar.models.filing import Filing
 from regradar.rag.answer_synthesis import SEARCH_EXCERPT_MAX_CHARS, synthesize_answer
@@ -37,6 +45,8 @@ from regradar.rag.retriever import retrieve_similar_filings
 from regradar.schemas.filings import (
     FilingListItem,
     FilingListResponse,
+    ManualAlertRequest,
+    ManualAlertResponse,
     PendingFilingItem,
     PendingFilingsResponse,
     PersonaBriefResponse,
@@ -184,6 +194,8 @@ def _require_admin_for_processing(key: AuthenticatedKey) -> None:
 
 @router.get("/v1/filings/pending", response_model=PendingFilingsResponse)
 async def list_pending_filings(
+    page: int = Query(default=1, ge=1, le=100_000),
+    page_size: int = Query(default=20, ge=1, le=100),
     key: AuthenticatedKey = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_authenticated_db),
 ) -> PendingFilingsResponse:
@@ -196,11 +208,18 @@ async def list_pending_filings(
     """
     _require_admin_for_processing(key)
 
+    total = (
+        await db.execute(
+            select(func.count()).select_from(Filing).where(Filing.status != FilingStatus.COMPLETE)
+        )
+    ).scalar_one()
+
     stmt = (
         select(Filing)
         .where(Filing.status != FilingStatus.COMPLETE)
         .order_by(Filing.ingested_at.desc())
-        .limit(100)
+        .limit(page_size)
+        .offset((page - 1) * page_size)
     )
     rows = (await db.execute(stmt)).scalars().all()
 
@@ -216,7 +235,10 @@ async def list_pending_filings(
                 processing_error=filing.processing_error,
             )
             for filing in rows
-        ]
+        ],
+        page=page,
+        page_size=page_size,
+        total=total,
     )
 
 
@@ -250,6 +272,69 @@ async def process_pending_filing(
 
     await db.refresh(filing)
     return ProcessFilingResponse(id=filing.id, status=filing.status)
+
+
+@router.post("/v1/filings/{filing_id}/alert", response_model=ManualAlertResponse)
+async def send_manual_alert(
+    filing_id: uuid.UUID,
+    body: ManualAlertRequest,
+    key: AuthenticatedKey = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_authenticated_db),
+) -> ManualAlertResponse:
+    """Admin-only: send this filing's alert to an address of the Admin's
+    own choosing, independent of the org's configured delivery settings —
+    e.g. looping in someone who isn't a RegRadar user at all. Reuses the
+    exact same email-rendering and Delivery-row-recording path the real
+    pipeline uses (delivery_agent.py's send_email_alert/_record_delivery),
+    so a manually-sent alert looks identical to an automatic one in
+    Activity — just recipient-controlled and channel-independent of
+    whatever Slack/webhook config exists.
+    """
+    _require_admin_for_processing(key)
+
+    filing = await db.get(Filing, filing_id)
+    if filing is None:
+        raise ApiError(status_code=404, code="filing_not_found", message="No filing exists with this ID.")
+
+    brief = (
+        await db.execute(select(Brief).where(Brief.filing_id == filing_id))
+    ).scalar_one_or_none()
+    if brief is None:
+        raise ApiError(
+            status_code=409,
+            code="filing_not_summarized",
+            message="This filing hasn't been summarized yet — process it first before sending an alert.",
+        )
+
+    from regradar.agents.delivery_agent import _record_delivery
+    from regradar.delivery.sendgrid_client import send_email_alert
+
+    result = await send_email_alert(
+        recipient=body.email,
+        entity_name=filing.entity_name,
+        filing_type=filing.filing_type,
+        risk_level=filing.risk_level,
+        executive_brief=brief.executive_brief,
+    )
+
+    await set_rls_context(db, role="service")  # _record_delivery's own write needs this re-asserted
+    await _record_delivery(
+        db,
+        filing_id,
+        key.organization_id,
+        DeliveryChannel.EMAIL,
+        body.email,
+        result,
+    )
+
+    if result.status != DeliveryStatus.SENT:
+        raise ApiError(
+            status_code=502,
+            code="alert_send_failed",
+            message=result.error_message or "Sending this alert failed.",
+        )
+
+    return ManualAlertResponse(status=result.status, recipient=body.email, error_message=result.error_message)
 
 
 @router.get("/v1/filings/{filing_id}")

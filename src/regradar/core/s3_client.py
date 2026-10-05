@@ -1,8 +1,13 @@
-"""S3 client factory for storing raw filing PDFs."""
+"""S3 client factory for storing raw filing PDFs.
+
+Works against real AWS S3 or Supabase Storage's S3-compatible gateway
+(see Settings.s3_endpoint_url's own comment) — same boto3 client either
+way, just a different endpoint/credentials/bucket in config."""
 
 from typing import Any
 
 import boto3
+from botocore.config import Config
 
 from regradar.core.config import get_settings
 
@@ -16,8 +21,15 @@ def get_s3_client() -> Any:
         _client = boto3.client(
             "s3",
             region_name=settings.s3_region,
+            endpoint_url=settings.s3_endpoint_url,
             aws_access_key_id=settings.aws_access_key_id.get_secret_value(),
             aws_secret_access_key=settings.aws_secret_access_key.get_secret_value(),
+            # Path-style addressing (bucket in the URL path, not a
+            # subdomain) — what Supabase Storage's S3-compatible gateway
+            # expects; harmless for real AWS S3 too. Only applied when an
+            # explicit endpoint is configured, to leave real-AWS behavior
+            # (virtual-hosted-style, boto3's own default) untouched.
+            config=Config(s3={"addressing_style": "path"}) if settings.s3_endpoint_url else None,
         )
     return _client
 

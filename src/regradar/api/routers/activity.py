@@ -64,6 +64,7 @@ async def list_activity(
             domain=domain,
             risk_level=risk_level,
             channel=delivery.channel,
+            recipient=delivery.recipient,
             status=delivery.status,
             is_fallback=delivery.is_fallback,
             at=at_value,

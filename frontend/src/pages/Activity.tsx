@@ -5,11 +5,16 @@ import { Link } from 'react-router-dom'
 import { allowedDomainsForRole } from '../auth/domainScope'
 import { useAuth } from '../auth/useAuth'
 import { Badge, type DomainValue, type RiskLevel } from '../components/Badge'
+import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Pagination } from '../components/Pagination'
+import { SendAlertModal } from '../components/SendAlertModal'
 import { ApiError, apiFetch } from '../lib/api'
 
-const PAGE_SIZE = 20
+// Kept small enough that a full page of alerts fits on screen without the
+// feed itself needing to scroll before the Pagination controls come into
+// view — the whole page should scroll, never a nested section.
+const PAGE_SIZE = 10
 
 type Channel = 'slack' | 'email' | 'webhook'
 type Status = 'pending' | 'sent' | 'failed' | 'retrying'
@@ -22,6 +27,7 @@ interface ActivityItem {
   domain: DomainValue | null
   risk_level: RiskLevel | null
   channel: Channel
+  recipient: string
   status: Status
   is_fallback: boolean
   at: string
@@ -83,6 +89,7 @@ export function Activity() {
   const { role } = useAuth()
   const allowedDomains = allowedDomainsForRole(role)
   const [page, setPage] = useState(1)
+  const [alertFilingId, setAlertFilingId] = useState<string | null>(null)
   const query = useQuery({
     queryKey: ['activity', page],
     queryFn: () =>
@@ -142,11 +149,23 @@ export function Activity() {
                     {item.risk_level && <Badge variant="risk" value={item.risk_level} />}
                   </div>
                   <p className="mt-1 text-xs text-slate-400">
-                    {CHANNEL_LABELS[item.channel]}
+                    {CHANNEL_LABELS[item.channel]} to{' '}
+                    <span className="font-mono text-slate-500">{item.recipient}</span>
                     {item.is_fallback && ' (fallback)'} · {new Date(item.at).toLocaleString()}
                   </p>
                 </div>
-                <StatusDot status={item.status} errorMessage={item.error_message} />
+                <div className="flex items-center gap-3">
+                  <StatusDot status={item.status} errorMessage={item.error_message} />
+                  {role === 'admin' && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setAlertFilingId(item.filing_id)}
+                    >
+                      Send alert
+                    </Button>
+                  )}
+                </div>
               </div>
             </Card>
           ))}
@@ -157,6 +176,14 @@ export function Activity() {
             onPageChange={setPage}
           />
         </div>
+      )}
+
+      {role === 'admin' && (
+        <SendAlertModal
+          filingId={alertFilingId ?? ''}
+          isOpen={alertFilingId !== null}
+          onClose={() => setAlertFilingId(null)}
+        />
       )}
     </div>
   )
