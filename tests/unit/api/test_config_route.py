@@ -192,7 +192,7 @@ def test_update_source_config_updates_fda_feed_url_on_existing_row(
     _mock_auth_and_rate_limit(monkeypatch, role=ApiKeyRole.ADMIN)
     existing_fda_row = _source_config_row(FilingSource.FDA, is_active=True)
     existing_fda_row.feed_url = "https://old-feed.example.com/rss.xml"
-    mock_db = _mock_config_db(monkeypatch, existing_rows=[existing_fda_row])
+    _mock_config_db(monkeypatch, existing_rows=[existing_fda_row])
 
     response = TestClient(create_app()).post(
         "/v1/config/sources",

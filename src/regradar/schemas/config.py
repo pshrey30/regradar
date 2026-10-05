@@ -22,7 +22,7 @@ class SourceConfigUpdateRequest(BaseModel):
     def _validate_fda_feed_url(cls, value: str | None) -> str | None:
         if value is None or value == "":
             return None
-        if not (value.startswith("http://") or value.startswith("https://")):
+        if not value.startswith(("http://", "https://")):
             raise ValueError("fda_feed_url must be a full http(s) URL.")
         return value
 

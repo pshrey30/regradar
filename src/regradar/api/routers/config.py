@@ -60,7 +60,7 @@ async def _process_filings_in_background(filing_ids: list[uuid.UUID]) -> None:
     for filing_id in filing_ids:
         try:
             await _run_pipeline_for_filing(str(filing_id))
-        except Exception as exc:  # noqa: BLE001 — one filing's failure must not stop the rest
+        except Exception as exc:  # one filing's failure must not stop the rest
             logger.exception("fetch-now: processing failed for filing %s", filing_id)
             await _mark_filing_failed(str(filing_id), str(exc))
 
