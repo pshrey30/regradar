@@ -9,6 +9,7 @@ fails.
 
 import asyncio
 import uuid
+from typing import Any, cast
 
 from celery import Task
 from celery.utils.log import get_task_logger
@@ -127,9 +128,14 @@ async def _run_pipeline_for_filing(filing_id: str) -> None:
         # that returns its whole state), keyed by the node name that just
         # ran — that key is what drives each status transition below.
         result: dict = {}
-        async for mode, chunk in build_graph().astream(
+        async for mode, raw_chunk in build_graph().astream(
             state, config={"configurable": {"db": db}}, stream_mode=["values", "updates"]
         ):
+            # astream's declared return type is looser than what it
+            # actually yields with a list stream_mode (verified empirically
+            # — see this block's own comment above) — cast rather than let
+            # mypy infer an incorrect str|Any union from the loose stub.
+            chunk = cast(dict[str, Any], raw_chunk)
             if mode == "values":
                 result = chunk
                 continue
